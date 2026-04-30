@@ -1,0 +1,6 @@
+backend/.gocache/
+backend/.gomodcache/
+backend/.gopath/
+backend/server
+*.log
+*.tmp

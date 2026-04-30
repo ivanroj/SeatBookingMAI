@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Coworking Seat Booking</title>
+  <link rel="stylesheet" href="styles.css">
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+</head>
+<body>
+  <main class="layout">
+    <header class="topbar">
+      <h1>Coworking Booking</h1>
+      <div id="statusBadge" class="badge">Signed out</div>
+    </header>
+
+    <section class="panel" id="authPanel">
+      <h2>Authentication</h2>
+      <div class="grid">
+        <label>Name<input id="regName" type="text" placeholder="User Name"></label>
+        <label>Email<input id="regEmail" type="email" placeholder="user@mai.ru"></label>
+        <label>Password<input id="regPassword" type="password" placeholder="password"></label>
+      </div>
+      <div class="actions">
+        <button id="registerBtn">Register</button>
+        <button id="loginBtn" class="secondary">Login</button>
+        <button id="logoutBtn" class="danger" hidden>Logout</button>
+      </div>
+      <p class="hint">Seed admin: <code>admin@mai.ru</code> / <code>admin123</code></p>
+    </section>
+
+    <section class="panel" id="bookingPanel" hidden>
+      <h2>User Bookings</h2>
+      <div class="grid">
+        <label>Start time<input id="startAt" type="datetime-local"></label>
+        <label>End time<input id="endAt" type="datetime-local"></label>
+      </div>
+      <div class="actions">
+        <button id="loadSeatsBtn">Load Available Seats</button>
+        <button id="loadMyBookingsBtn" class="secondary">Refresh My Bookings</button>
+      </div>
+      <div class="tables">
+        <div>
+          <h3>Available Seats</h3>
+          <table>
+            <thead><tr><th>ID</th><th>Name</th><th>Zone</th><th>Type</th><th></th></tr></thead>
+            <tbody id="seatsTable"></tbody>
+          </table>
+        </div>
+        <div>
+          <h3>My Bookings</h3>
+          <table>
+            <thead><tr><th>ID</th><th>Seat</th><th>Start</th><th>End</th><th>Status</th><th></th></tr></thead>
+            <tbody id="myBookingsTable"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel" id="adminPanel" hidden>
+      <h2>Admin</h2>
+      <div class="grid">
+        <label>Seat ID (for update/delete)<input id="seatId" type="number" min="1" placeholder="1"></label>
+        <label>Seat name<input id="seatName" type="text" placeholder="C-01"></label>
+        <label>Zone<input id="seatZone" type="text" placeholder="C"></label>
+        <label>Type<input id="seatType" type="text" placeholder="desk"></label>
+      </div>
+      <div class="actions">
+        <button id="createSeatBtn">Create Seat</button>
+        <button id="updateSeatBtn" class="secondary">Update Seat</button>
+        <button id="deleteSeatBtn" class="danger">Delete Seat</button>
+      </div>
+
+      <div class="grid compact">
+        <label>Booking limit<input id="bookingLimit" type="number" min="1" max="100" value="3"></label>
+      </div>
+      <div class="actions">
+        <button id="updateLimitBtn">Update Limit</button>
+        <button id="loadAllBookingsBtn" class="secondary">Load All Bookings</button>
+      </div>
+
+      <div class="grid">
+        <label>Report from<input id="reportFrom" type="datetime-local"></label>
+        <label>Report to<input id="reportTo" type="datetime-local"></label>
+      </div>
+      <div class="actions">
+        <button id="runReportBtn">Run Report</button>
+      </div>
+
+      <div class="tables">
+        <div>
+          <h3>All Bookings</h3>
+          <table>
+            <thead><tr><th>ID</th><th>User</th><th>Seat</th><th>Start</th><th>End</th><th>Status</th><th></th></tr></thead>
+            <tbody id="allBookingsTable"></tbody>
+          </table>
+        </div>
+        <div>
+          <h3>Report Result</h3>
+          <pre id="reportResult">{}</pre>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel log">
+      <h2>Log</h2>
+      <pre id="logOutput"></pre>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
