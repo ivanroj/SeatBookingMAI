@@ -262,6 +262,204 @@ func TestBuildReportTotals(t *testing.T) {
 	}
 }
 
+func TestRegisterLoginAndAuthenticateFlow(t *testing.T) {
+	repo := newFakeRepo()
+	now := time.Date(2026, 5, 1, 10, 0, 0, 0, time.UTC)
+	svc := NewService(repo, WithClock(func() time.Time { return now }))
+
+	user, err := svc.Register(context.Background(), RegisterInput{
+		Name:     "User One",
+		Email:    "user@mai.ru",
+		Password: "secret123",
+	})
+	if err != nil {
+		t.Fatalf("register failed: %v", err)
+	}
+
+	token, err := svc.Login(context.Background(), LoginInput{
+		Email:    "user@mai.ru",
+		Password: "secret123",
+	})
+	if err != nil {
+		t.Fatalf("login failed: %v", err)
+	}
+	if token == "" {
+		t.Fatal("expected non-empty token")
+	}
+
+	authUser, err := svc.Authenticate(context.Background(), token)
+	if err != nil {
+		t.Fatalf("authenticate failed: %v", err)
+	}
+	if authUser.ID != user.ID {
+		t.Fatalf("expected user id %d, got %d", user.ID, authUser.ID)
+	}
+}
+
+func TestLoginFailsForWrongPassword(t *testing.T) {
+	repo := newFakeRepo()
+	now := time.Date(2026, 5, 1, 10, 0, 0, 0, time.UTC)
+	svc := NewService(repo, WithClock(func() time.Time { return now }))
+
+	_, err := svc.Register(context.Background(), RegisterInput{
+		Name:     "User One",
+		Email:    "user@mai.ru",
+		Password: "secret123",
+	})
+	if err != nil {
+		t.Fatalf("register failed: %v", err)
+	}
+
+	_, err = svc.Login(context.Background(), LoginInput{
+		Email:    "user@mai.ru",
+		Password: "wrong-password",
+	})
+	if !errors.Is(err, domain.ErrInvalidCredentials) {
+		t.Fatalf("expected ErrInvalidCredentials, got %v", err)
+	}
+}
+
+func TestListAvailableSeatsExcludesInactiveAndConflicted(t *testing.T) {
+	repo := newFakeRepo()
+	now := time.Date(2026, 5, 1, 10, 0, 0, 0, time.UTC)
+	svc := NewService(repo, WithClock(func() time.Time { return now }))
+
+	user := repo.mustCreateUser("user@mai.ru", domain.RoleUser)
+	freeSeat := repo.mustCreateSeat("A1")
+	conflictedSeat := repo.mustCreateSeat("A2")
+	inactiveSeat := repo.mustCreateSeat("A3")
+	inactiveSeat.Active = false
+	_ = repo.UpdateSeat(context.Background(), &inactiveSeat)
+
+	windowStart := now.Add(2 * time.Hour)
+	windowEnd := now.Add(3 * time.Hour)
+	repo.mustCreateBooking(domain.Booking{
+		UserID:  user.ID,
+		SeatID:  conflictedSeat.ID,
+		StartAt: windowStart.Add(15 * time.Minute),
+		EndAt:   windowEnd.Add(15 * time.Minute),
+		Status:  domain.BookingStatusConfirmed,
+	})
+
+	seats, err := svc.ListAvailableSeats(context.Background(), windowStart, windowEnd)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(seats) != 1 || seats[0].ID != freeSeat.ID {
+		t.Fatalf("expected only seat %d available, got %#v", freeSeat.ID, seats)
+	}
+}
+
+func TestCreateUpdateDeleteSeatLifecycleForAdmin(t *testing.T) {
+	repo := newFakeRepo()
+	now := time.Date(2026, 5, 1, 10, 0, 0, 0, time.UTC)
+	svc := NewService(repo, WithClock(func() time.Time { return now }))
+
+	if _, err := svc.CreateSeat(context.Background(), domain.RoleUser, SeatInput{
+		Name: "X1", Zone: "X", Type: "desk", Active: true,
+	}); !errors.Is(err, domain.ErrForbidden) {
+		t.Fatalf("expected ErrForbidden, got %v", err)
+	}
+
+	seat, err := svc.CreateSeat(context.Background(), domain.RoleAdmin, SeatInput{
+		Name: "X1", Zone: "X", Type: "desk", Active: true,
+	})
+	if err != nil {
+		t.Fatalf("create seat failed: %v", err)
+	}
+
+	updated, err := svc.UpdateSeat(context.Background(), domain.RoleAdmin, seat.ID, SeatInput{
+		Name: "X1-upd", Zone: "Y", Type: "focus", Active: true,
+	})
+	if err != nil {
+		t.Fatalf("update seat failed: %v", err)
+	}
+	if updated.Name != "X1-upd" || updated.Zone != "Y" || updated.Type != "focus" {
+		t.Fatalf("unexpected seat state after update: %#v", updated)
+	}
+
+	if err := svc.DeleteSeat(context.Background(), domain.RoleAdmin, seat.ID); err != nil {
+		t.Fatalf("delete seat failed: %v", err)
+	}
+	if _, err := repo.GetSeatByID(context.Background(), seat.ID); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("expected deleted seat to be missing, got %v", err)
+	}
+}
+
+func TestAdminUpdateBookingStatus(t *testing.T) {
+	repo := newFakeRepo()
+	now := time.Date(2026, 5, 1, 10, 0, 0, 0, time.UTC)
+	svc := NewService(repo, WithClock(func() time.Time { return now }))
+
+	user := repo.mustCreateUser("user@mai.ru", domain.RoleUser)
+	seat := repo.mustCreateSeat("A1")
+	booking := repo.mustCreateBooking(domain.Booking{
+		UserID:  user.ID,
+		SeatID:  seat.ID,
+		StartAt: now.Add(2 * time.Hour),
+		EndAt:   now.Add(3 * time.Hour),
+		Status:  domain.BookingStatusConfirmed,
+	})
+
+	if err := svc.AdminUpdateBookingStatus(context.Background(), domain.RoleUser, booking.ID, domain.BookingStatusCanceled); !errors.Is(err, domain.ErrForbidden) {
+		t.Fatalf("expected ErrForbidden, got %v", err)
+	}
+
+	if err := svc.AdminUpdateBookingStatus(context.Background(), domain.RoleAdmin, booking.ID, domain.BookingStatusCanceled); err != nil {
+		t.Fatalf("admin update failed: %v", err)
+	}
+	if err := svc.AdminUpdateBookingStatus(context.Background(), domain.RoleAdmin, booking.ID, domain.BookingStatusCompleted); !errors.Is(err, domain.ErrConflictState) {
+		t.Fatalf("expected ErrConflictState on second terminal update, got %v", err)
+	}
+}
+
+func TestUpdateBookingLimitValidation(t *testing.T) {
+	repo := newFakeRepo()
+	now := time.Date(2026, 5, 1, 10, 0, 0, 0, time.UTC)
+	svc := NewService(repo, WithClock(func() time.Time { return now }))
+
+	if err := svc.UpdateBookingLimit(context.Background(), domain.RoleAdmin, 0); !errors.Is(err, domain.ErrInvalidInput) {
+		t.Fatalf("expected ErrInvalidInput for zero, got %v", err)
+	}
+	if err := svc.UpdateBookingLimit(context.Background(), domain.RoleAdmin, 101); !errors.Is(err, domain.ErrInvalidInput) {
+		t.Fatalf("expected ErrInvalidInput for >100, got %v", err)
+	}
+	if err := svc.UpdateBookingLimit(context.Background(), domain.RoleAdmin, 7); err != nil {
+		t.Fatalf("unexpected error updating limit: %v", err)
+	}
+	if repo.settings.BookingLimit != 7 {
+		t.Fatalf("expected repo limit 7, got %d", repo.settings.BookingLimit)
+	}
+}
+
+func TestAdminListBookingsRoleGuard(t *testing.T) {
+	repo := newFakeRepo()
+	now := time.Date(2026, 5, 1, 10, 0, 0, 0, time.UTC)
+	svc := NewService(repo, WithClock(func() time.Time { return now }))
+
+	user := repo.mustCreateUser("user@mai.ru", domain.RoleUser)
+	seat := repo.mustCreateSeat("A1")
+	repo.mustCreateBooking(domain.Booking{
+		UserID:  user.ID,
+		SeatID:  seat.ID,
+		StartAt: now.Add(2 * time.Hour),
+		EndAt:   now.Add(3 * time.Hour),
+		Status:  domain.BookingStatusConfirmed,
+	})
+
+	if _, err := svc.AdminListBookings(context.Background(), domain.RoleUser); !errors.Is(err, domain.ErrForbidden) {
+		t.Fatalf("expected ErrForbidden, got %v", err)
+	}
+	all, err := svc.AdminListBookings(context.Background(), domain.RoleAdmin)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(all) != 1 {
+		t.Fatalf("expected 1 booking, got %d", len(all))
+	}
+}
+
 type fakeRepo struct {
 	users         map[int64]domain.User
 	usersByEmail  map[string]int64
