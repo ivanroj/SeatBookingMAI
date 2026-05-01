@@ -23,6 +23,7 @@ type User struct {
 	Email        string    `json:"email"`
 	PasswordHash string    `json:"-"`
 	Role         Role      `json:"role"`
+	DeviceID     string    `json:"device_id,omitempty"`
 	CreatedAt    time.Time `json:"created_at"`
 }
 
@@ -44,14 +45,15 @@ type Seat struct {
 }
 
 type Booking struct {
-	ID        int64         `json:"id"`
-	UserID    int64         `json:"user_id"`
-	SeatID    int64         `json:"seat_id"`
-	StartAt   time.Time     `json:"start_at"`
-	EndAt     time.Time     `json:"end_at"`
-	Status    BookingStatus `json:"status"`
-	CreatedAt time.Time     `json:"created_at"`
-	UpdatedAt time.Time     `json:"updated_at"`
+	ID          int64         `json:"id"`
+	UserID      int64         `json:"user_id"`
+	SeatID      int64         `json:"seat_id"`
+	StartAt     time.Time     `json:"start_at"`
+	EndAt       time.Time     `json:"end_at"`
+	Status      BookingStatus `json:"status"`
+	DisplayName string        `json:"display_name,omitempty"`
+	CreatedAt   time.Time     `json:"created_at"`
+	UpdatedAt   time.Time     `json:"updated_at"`
 }
 
 type Settings struct {

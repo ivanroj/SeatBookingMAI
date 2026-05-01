@@ -1,0 +1,11 @@
+.git
+.gitignore
+.dockerignore
+*.md
+Dockerfile
+.gocache/
+.gomodcache/
+.gopath/
+server
+*.log
+*.tmp

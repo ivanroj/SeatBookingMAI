@@ -64,10 +64,10 @@ type SeatInput struct {
 }
 
 type CreateBookingInput struct {
-	SeatID   int64
-	StartAt  time.Time
-	EndAt    time.Time
-	UserNote string
+	SeatID      int64
+	StartAt     time.Time
+	EndAt       time.Time
+	DisplayName string
 }
 
 type Report struct {
@@ -244,19 +244,80 @@ func (s *Service) CreateBooking(ctx context.Context, userID int64, in CreateBook
 		return nil, domain.ErrSeatUnavailable
 	}
 
+	displayName := strings.TrimSpace(in.DisplayName)
+
 	booking := &domain.Booking{
-		UserID:    userID,
-		SeatID:    in.SeatID,
-		StartAt:   in.StartAt.UTC(),
-		EndAt:     in.EndAt.UTC(),
-		Status:    domain.BookingStatusConfirmed,
-		CreatedAt: now,
-		UpdatedAt: now,
+		UserID:      userID,
+		SeatID:      in.SeatID,
+		StartAt:     in.StartAt.UTC(),
+		EndAt:       in.EndAt.UTC(),
+		Status:      domain.BookingStatusConfirmed,
+		DisplayName: displayName,
+		CreatedAt:   now,
+		UpdatedAt:   now,
 	}
 	if err := s.repo.CreateBooking(ctx, booking); err != nil {
 		return nil, err
 	}
+
+	// For device-bound students we keep the user's name in sync with the most
+	// recent display_name so that admin views and reports are readable even
+	// without joining display_name.
+	if displayName != "" {
+		user, err := s.repo.GetUserByID(ctx, userID)
+		if err == nil && user.DeviceID != "" && user.Name != displayName {
+			_ = s.repo.UpdateUserName(ctx, userID, displayName)
+		}
+	}
 	return booking, nil
+}
+
+// LoginAsDevice issues a session for a device-bound anonymous student.
+// On the first call for a given deviceID the service creates a hidden user
+// with role=user; subsequent calls return tokens for the same user. There is
+// no password — the device id itself is the credential and is stored only on
+// the device that generated it.
+func (s *Service) LoginAsDevice(ctx context.Context, deviceID string) (string, error) {
+	deviceID = strings.TrimSpace(deviceID)
+	if len(deviceID) < 8 || len(deviceID) > 128 {
+		return "", domain.ErrInvalidInput
+	}
+
+	user, err := s.repo.GetUserByDeviceID(ctx, deviceID)
+	if err != nil && !errors.Is(err, domain.ErrNotFound) {
+		return "", err
+	}
+	if user == nil {
+		now := s.now().UTC()
+		newUser := &domain.User{
+			Name:         "Студент",
+			Email:        "device-" + deviceID + "@local.invalid",
+			PasswordHash: "!device", // not used for password auth, never matches bcrypt
+			Role:         domain.RoleUser,
+			DeviceID:     deviceID,
+			CreatedAt:    now,
+		}
+		if err := s.repo.CreateUser(ctx, newUser); err != nil {
+			return "", err
+		}
+		user = newUser
+	}
+
+	token, err := randomToken(32)
+	if err != nil {
+		return "", err
+	}
+	now := s.now().UTC()
+	session := &domain.Session{
+		Token:     token,
+		UserID:    user.ID,
+		ExpiresAt: now.Add(24 * time.Hour),
+		CreatedAt: now,
+	}
+	if err := s.repo.CreateSession(ctx, session); err != nil {
+		return "", err
+	}
+	return token, nil
 }
 
 func (s *Service) CancelBooking(ctx context.Context, userID, bookingID int64) error {

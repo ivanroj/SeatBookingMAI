@@ -2,15 +2,18 @@ services:
   db:
     image: postgres:16-alpine
     container_name: seatbooking-db
+    restart: unless-stopped
     environment:
-      POSTGRES_DB: seat_booking
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: ${POSTGRES_DB:-seat_booking}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./backend/migrations/001_init.sql:/docker-entrypoint-initdb.d/001_init.sql:ro
+      # All .sql files in /docker-entrypoint-initdb.d/ are applied on first
+      # initialisation, in lexical order (001_init then 002_device_session, …).
+      - ./backend/migrations:/docker-entrypoint-initdb.d:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d seat_booking"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-seat_booking}"]
       interval: 5s
       timeout: 3s
       retries: 20
@@ -21,12 +24,19 @@ services:
     build:
       context: ./backend
     container_name: seatbooking-backend
+    restart: unless-stopped
     environment:
-      DATABASE_URL: postgres://postgres:postgres@db:5432/seat_booking?sslmode=disable
+      DATABASE_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-seat_booking}?sslmode=disable
       APP_PORT: "8080"
     depends_on:
       db:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "-O", "/dev/null", "http://127.0.0.1:8080/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
     ports:
       - "8080:8080"
 
@@ -34,8 +44,16 @@ services:
     build:
       context: ./frontend
     container_name: seatbooking-frontend
+    restart: unless-stopped
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "-O", "/dev/null", "http://127.0.0.1/"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
     ports:
       - "3000:80"
 

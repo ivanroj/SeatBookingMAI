@@ -529,6 +529,20 @@ func (r *fakeRepo) CreateUser(_ context.Context, user *domain.User) error {
 	return nil
 }
 
+func (r *fakeRepo) GetUserByDeviceID(_ context.Context, _ string) (*domain.User, error) {
+	return nil, domain.ErrNotFound
+}
+
+func (r *fakeRepo) UpdateUserName(_ context.Context, id int64, name string) error {
+	user, ok := r.users[id]
+	if !ok {
+		return domain.ErrNotFound
+	}
+	user.Name = name
+	r.users[id] = user
+	return nil
+}
+
 func (r *fakeRepo) GetUserByEmail(_ context.Context, email string) (*domain.User, error) {
 	id, ok := r.usersByEmail[email]
 	if !ok {
