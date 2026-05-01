@@ -1,30 +1,49 @@
+// Coworking Seat Booking — frontend.
+//
+// The app has three screens, gated by the actor (per the spec):
+//   * landing  — "Кто вы?" choice between Student and Admin.
+//   * student  — anonymous, device-bound: no login, name typed per booking,
+//                only the student use cases (UC-2/3/4) are reachable.
+//   * admin    — email+password login (UC-1) followed by the admin use cases
+//                (UC-5/6/7/8) only.
+
+const SCREEN = Object.freeze({ LANDING: "landing", STUDENT: "student", ADMIN: "admin" });
+
 const state = {
-  token: localStorage.getItem("token") || "",
+  screen: SCREEN.LANDING,
+  // Bearer token issued for the current screen. Tokens are kept separately per
+  // screen so that switching role doesn't carry credentials over.
+  studentToken: localStorage.getItem("studentToken") || "",
+  adminToken: localStorage.getItem("adminToken") || "",
   user: null,
+  deviceId: localStorage.getItem("deviceId") || "",
 };
 
 const el = {
+  screenTitle: document.getElementById("screenTitle"),
   statusBadge: document.getElementById("statusBadge"),
+  backHomeBtn: document.getElementById("backHomeBtn"),
   logOutput: document.getElementById("logOutput"),
-  authPanel: document.getElementById("authPanel"),
-  bookingPanel: document.getElementById("bookingPanel"),
+
+  landingPanel: document.getElementById("landingPanel"),
+  chooseStudentBtn: document.getElementById("chooseStudentBtn"),
+  chooseAdminBtn: document.getElementById("chooseAdminBtn"),
+
+  studentBookingPanel: document.getElementById("studentBookingPanel"),
+  studentName: document.getElementById("studentName"),
+  studentStartAt: document.getElementById("studentStartAt"),
+  studentEndAt: document.getElementById("studentEndAt"),
+  studentLoadSeatsBtn: document.getElementById("studentLoadSeatsBtn"),
+  studentRefreshBtn: document.getElementById("studentRefreshBtn"),
+  studentSeatsTable: document.getElementById("studentSeatsTable"),
+  studentBookingsTable: document.getElementById("studentBookingsTable"),
+
+  adminLoginPanel: document.getElementById("adminLoginPanel"),
+  adminEmail: document.getElementById("adminEmail"),
+  adminPassword: document.getElementById("adminPassword"),
+  adminLoginBtn: document.getElementById("adminLoginBtn"),
+
   adminPanel: document.getElementById("adminPanel"),
-
-  regName: document.getElementById("regName"),
-  regEmail: document.getElementById("regEmail"),
-  regPassword: document.getElementById("regPassword"),
-
-  registerBtn: document.getElementById("registerBtn"),
-  loginBtn: document.getElementById("loginBtn"),
-  logoutBtn: document.getElementById("logoutBtn"),
-
-  startAt: document.getElementById("startAt"),
-  endAt: document.getElementById("endAt"),
-  loadSeatsBtn: document.getElementById("loadSeatsBtn"),
-  loadMyBookingsBtn: document.getElementById("loadMyBookingsBtn"),
-  seatsTable: document.getElementById("seatsTable"),
-  myBookingsTable: document.getElementById("myBookingsTable"),
-
   seatId: document.getElementById("seatId"),
   seatName: document.getElementById("seatName"),
   seatZone: document.getElementById("seatZone"),
@@ -32,12 +51,10 @@ const el = {
   createSeatBtn: document.getElementById("createSeatBtn"),
   updateSeatBtn: document.getElementById("updateSeatBtn"),
   deleteSeatBtn: document.getElementById("deleteSeatBtn"),
-
   bookingLimit: document.getElementById("bookingLimit"),
   updateLimitBtn: document.getElementById("updateLimitBtn"),
   loadAllBookingsBtn: document.getElementById("loadAllBookingsBtn"),
   allBookingsTable: document.getElementById("allBookingsTable"),
-
   reportFrom: document.getElementById("reportFrom"),
   reportTo: document.getElementById("reportTo"),
   runReportBtn: document.getElementById("runReportBtn"),
@@ -45,8 +62,19 @@ const el = {
 };
 
 function log(message) {
-  const timestamp = new Date().toISOString();
-  el.logOutput.textContent = `[${timestamp}] ${message}\n${el.logOutput.textContent}`.slice(0, 6000);
+  const ts = new Date().toISOString();
+  el.logOutput.textContent = `[${ts}] ${message}\n${el.logOutput.textContent}`.slice(0, 6000);
+}
+
+function fmtError(err) {
+  const message = (err && err.message) ? err.message : String(err);
+  log(`Ошибка: ${message}`);
+  alert(message);
+}
+
+function toInputValue(date) {
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
 function toISO(value) {
@@ -54,24 +82,35 @@ function toISO(value) {
   return new Date(value).toISOString();
 }
 
-function setDefaultWindow() {
-  const now = new Date();
-  const start = new Date(now.getTime() + 60 * 60 * 1000);
-  const end = new Date(now.getTime() + 2 * 60 * 60 * 1000);
-  el.startAt.value = toInputValue(start);
-  el.endAt.value = toInputValue(end);
-  el.reportFrom.value = toInputValue(now);
-  el.reportTo.value = toInputValue(new Date(now.getTime() + 24 * 60 * 60 * 1000));
+function fmtDt(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  return `${String(d.getDate()).padStart(2, "0")}.${String(d.getMonth() + 1).padStart(2, "0")} ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
 }
 
-function toInputValue(date) {
-  const pad = (n) => String(n).padStart(2, "0");
-  const yyyy = date.getFullYear();
-  const mm = pad(date.getMonth() + 1);
-  const dd = pad(date.getDate());
-  const hh = pad(date.getHours());
-  const mi = pad(date.getMinutes());
-  return `${yyyy}-${mm}-${dd}T${hh}:${mi}`;
+function setDefaultStudentWindow() {
+  const now = new Date();
+  const start = new Date(now.getTime() + 2 * 60 * 60 * 1000);
+  const end = new Date(now.getTime() + 3 * 60 * 60 * 1000);
+  if (!el.studentStartAt.value) el.studentStartAt.value = toInputValue(start);
+  if (!el.studentEndAt.value) el.studentEndAt.value = toInputValue(end);
+}
+
+function setDefaultReportWindow() {
+  const now = new Date();
+  if (!el.reportFrom.value) el.reportFrom.value = toInputValue(now);
+  if (!el.reportTo.value) el.reportTo.value = toInputValue(new Date(now.getTime() + 24 * 60 * 60 * 1000));
+}
+
+function ensureDeviceID() {
+  if (!state.deviceId) {
+    const uuid = (crypto && crypto.randomUUID)
+      ? crypto.randomUUID()
+      : `dev-${Math.random().toString(36).slice(2)}-${Date.now()}`;
+    state.deviceId = uuid;
+    localStorage.setItem("deviceId", uuid);
+  }
+  return state.deviceId;
 }
 
 async function api(path, options = {}) {
@@ -79,8 +118,9 @@ async function api(path, options = {}) {
   if (!headers["Content-Type"] && options.body !== undefined) {
     headers["Content-Type"] = "application/json";
   }
-  if (state.token) {
-    headers.Authorization = `Bearer ${state.token}`;
+  const token = options.token !== undefined ? options.token : tokenForCurrentScreen();
+  if (token) {
+    headers.Authorization = `Bearer ${token}`;
   }
   const response = await fetch(path, {
     method: options.method || "GET",
@@ -90,270 +130,353 @@ async function api(path, options = {}) {
   const text = await response.text();
   const data = text ? JSON.parse(text) : null;
   if (!response.ok) {
-    throw new Error(data?.error || `HTTP ${response.status}`);
+    throw new Error((data && data.error) || `HTTP ${response.status}`);
   }
   return data;
 }
 
-function updateAuthUI() {
-  const signedIn = Boolean(state.token && state.user);
-  el.logoutBtn.hidden = !signedIn;
-  el.bookingPanel.hidden = !signedIn;
-  el.adminPanel.hidden = !(signedIn && state.user.role === "admin");
-  el.statusBadge.textContent = signedIn
-    ? `${state.user.email} (${state.user.role})`
-    : "Signed out";
+function tokenForCurrentScreen() {
+  if (state.screen === SCREEN.STUDENT) return state.studentToken;
+  if (state.screen === SCREEN.ADMIN) return state.adminToken;
+  return "";
 }
 
-async function loadMe() {
-  if (!state.token) {
-    state.user = null;
-    updateAuthUI();
-    return;
+// ----- screen routing -----------------------------------------------------
+
+function showScreen(screen) {
+  state.screen = screen;
+  el.landingPanel.hidden = screen !== SCREEN.LANDING;
+  el.studentBookingPanel.hidden = screen !== SCREEN.STUDENT;
+  el.adminLoginPanel.hidden = !(screen === SCREEN.ADMIN && !state.adminToken);
+  el.adminPanel.hidden = !(screen === SCREEN.ADMIN && state.adminToken && state.user && state.user.role === "admin");
+  el.backHomeBtn.hidden = screen === SCREEN.LANDING;
+
+  if (screen === SCREEN.LANDING) {
+    el.screenTitle.textContent = "Бронирование мест";
+    el.statusBadge.textContent = "Не выбрана роль";
+  } else if (screen === SCREEN.STUDENT) {
+    el.screenTitle.textContent = "Студент / сотрудник";
+    el.statusBadge.textContent = `Устройство: ${state.deviceId.slice(0, 8)}…`;
+  } else if (screen === SCREEN.ADMIN) {
+    el.screenTitle.textContent = "Администратор";
+    el.statusBadge.textContent = state.adminToken && state.user
+      ? `${state.user.email} (admin)`
+      : "Не авторизован";
   }
-  try {
-    state.user = await api("/api/auth/me");
-    updateAuthUI();
-  } catch (err) {
-    log(`Auth check failed: ${err.message}`);
-    state.token = "";
-    state.user = null;
-    localStorage.removeItem("token");
-    updateAuthUI();
-  }
 }
 
-async function register() {
-  const name = el.regName.value.trim();
-  const email = el.regEmail.value.trim();
-  const password = el.regPassword.value;
-  await api("/api/auth/register", {
-    method: "POST",
-    body: { name, email, password },
-  });
-  log(`Registered user ${email}`);
-}
-
-async function login() {
-  const email = el.regEmail.value.trim();
-  const password = el.regPassword.value;
-  const result = await api("/api/auth/login", {
-    method: "POST",
-    body: { email, password },
-  });
-  state.token = result.token;
-  localStorage.setItem("token", state.token);
-  await loadMe();
-  await loadMyBookings();
-  log(`Logged in as ${email}`);
-}
-
-function logout() {
-  state.token = "";
+function goHome() {
+  // Drop tokens silently on going back so a shared device can switch roles.
+  state.studentToken = "";
+  state.adminToken = "";
   state.user = null;
-  localStorage.removeItem("token");
-  updateAuthUI();
-  log("Logged out");
+  localStorage.removeItem("studentToken");
+  localStorage.removeItem("adminToken");
+  showScreen(SCREEN.LANDING);
 }
 
-async function loadAvailableSeats() {
-  const startAt = toISO(el.startAt.value);
-  const endAt = toISO(el.endAt.value);
-  const seats = await api(`/api/seats/available?start_at=${encodeURIComponent(startAt)}&end_at=${encodeURIComponent(endAt)}`);
-
-  el.seatsTable.innerHTML = "";
-  seats.forEach((seat) => {
-    const row = document.createElement("tr");
-    row.innerHTML = `
-      <td>${seat.id}</td>
-      <td>${seat.name}</td>
-      <td>${seat.zone}</td>
-      <td>${seat.type}</td>
-      <td><button data-seat-id="${seat.id}">Book</button></td>
-    `;
-    row.querySelector("button").addEventListener("click", () => createBooking(seat.id));
-    el.seatsTable.appendChild(row);
-  });
-}
-
-async function createBooking(seatId) {
-  const startAt = toISO(el.startAt.value);
-  const endAt = toISO(el.endAt.value);
-  await api("/api/bookings", {
-    method: "POST",
-    body: { seat_id: seatId, start_at: startAt, end_at: endAt },
-  });
-  log(`Created booking for seat ${seatId}`);
-  await loadMyBookings();
-  await loadAvailableSeats();
-}
-
-function formatDT(value) {
-  return new Date(value).toLocaleString();
-}
-
-async function loadMyBookings() {
-  const bookings = await api("/api/bookings/me");
-  el.myBookingsTable.innerHTML = "";
-  bookings.forEach((booking) => {
-    const canCancel = booking.status === "confirmed";
-    const row = document.createElement("tr");
-    row.innerHTML = `
-      <td>${booking.id}</td>
-      <td>${booking.seat_id}</td>
-      <td>${formatDT(booking.start_at)}</td>
-      <td>${formatDT(booking.end_at)}</td>
-      <td>${booking.status}</td>
-      <td>${canCancel ? `<button data-id="${booking.id}" class="danger">Cancel</button>` : ""}</td>
-    `;
-    const btn = row.querySelector("button");
-    if (btn) {
-      btn.addEventListener("click", async () => {
-        await api(`/api/bookings/${booking.id}`, { method: "DELETE" });
-        log(`Canceled booking ${booking.id}`);
-        await loadMyBookings();
-        await loadAvailableSeats();
+async function chooseStudent() {
+  try {
+    ensureDeviceID();
+    if (!state.studentToken) {
+      const result = await api("/api/auth/device", {
+        method: "POST",
+        body: { device_id: state.deviceId },
+        token: "",
       });
+      state.studentToken = result.token;
+      localStorage.setItem("studentToken", state.studentToken);
     }
-    el.myBookingsTable.appendChild(row);
-  });
+    setDefaultStudentWindow();
+    showScreen(SCREEN.STUDENT);
+    log(`Студенческая сессия по устройству ${state.deviceId.slice(0, 8)}…`);
+    await loadStudentBookings();
+  } catch (err) {
+    fmtError(err);
+  }
+}
+
+function chooseAdmin() {
+  showScreen(SCREEN.ADMIN);
+}
+
+// ----- student flow (UC-2, UC-3, UC-4) ------------------------------------
+
+async function loadStudentSeats() {
+  try {
+    const startISO = toISO(el.studentStartAt.value);
+    const endISO = toISO(el.studentEndAt.value);
+    if (!startISO || !endISO) { fmtError(new Error("Укажите начало и конец интервала.")); return; }
+    const params = new URLSearchParams({ start_at: startISO, end_at: endISO });
+    const seats = await api(`/api/seats/available?${params.toString()}`);
+    el.studentSeatsTable.innerHTML = "";
+    if (!seats.length) {
+      el.studentSeatsTable.innerHTML = `<tr><td colspan="5" class="hint">Свободных мест нет.</td></tr>`;
+      log("Свободных мест нет на выбранный интервал");
+      return;
+    }
+    for (const s of seats) {
+      const tr = document.createElement("tr");
+      tr.innerHTML = `
+        <td>${s.id}</td>
+        <td>${s.name}</td>
+        <td>${s.zone}</td>
+        <td>${s.type}</td>
+        <td><button data-seat="${s.id}">Забронировать</button></td>`;
+      tr.querySelector("button").addEventListener("click", () => bookSeat(s.id));
+      el.studentSeatsTable.appendChild(tr);
+    }
+    log(`Загружено свободных мест: ${seats.length}`);
+  } catch (err) {
+    fmtError(err);
+  }
+}
+
+async function bookSeat(seatID) {
+  const name = (el.studentName.value || "").trim();
+  if (!name) { fmtError(new Error("Введите имя — оно сохранится в брони.")); return; }
+  try {
+    const result = await api("/api/bookings", {
+      method: "POST",
+      body: {
+        seat_id: seatID,
+        start_at: toISO(el.studentStartAt.value),
+        end_at: toISO(el.studentEndAt.value),
+        display_name: name,
+      },
+    });
+    log(`Бронь #${result.id} создана для «${result.display_name || name}»`);
+    await Promise.all([loadStudentSeats(), loadStudentBookings()]);
+  } catch (err) {
+    fmtError(err);
+  }
+}
+
+async function loadStudentBookings() {
+  if (!state.studentToken) return;
+  try {
+    const bookings = await api("/api/bookings/me");
+    el.studentBookingsTable.innerHTML = "";
+    if (!bookings.length) {
+      el.studentBookingsTable.innerHTML = `<tr><td colspan="7" class="hint">Пока нет броней.</td></tr>`;
+      return;
+    }
+    for (const b of bookings) {
+      const tr = document.createElement("tr");
+      const canCancel = b.status === "confirmed";
+      tr.innerHTML = `
+        <td>${b.id}</td>
+        <td>${b.seat_id}</td>
+        <td>${b.display_name || ""}</td>
+        <td>${fmtDt(b.start_at)}</td>
+        <td>${fmtDt(b.end_at)}</td>
+        <td>${b.status}</td>
+        <td>${canCancel ? `<button data-id="${b.id}" class="danger">Отменить</button>` : ""}</td>`;
+      const cancelBtn = tr.querySelector("button");
+      if (cancelBtn) cancelBtn.addEventListener("click", () => cancelStudentBooking(b.id));
+      el.studentBookingsTable.appendChild(tr);
+    }
+  } catch (err) {
+    fmtError(err);
+  }
+}
+
+async function cancelStudentBooking(id) {
+  try {
+    await api(`/api/bookings/${id}`, { method: "DELETE" });
+    log(`Бронь #${id} отменена`);
+    await Promise.all([loadStudentSeats(), loadStudentBookings()]);
+  } catch (err) {
+    fmtError(err);
+  }
+}
+
+// ----- admin flow (UC-1 then UC-5/6/7/8) ----------------------------------
+
+async function adminLogin() {
+  try {
+    const email = el.adminEmail.value.trim();
+    const password = el.adminPassword.value;
+    if (!email || !password) { fmtError(new Error("Введите email и пароль.")); return; }
+    const result = await api("/api/auth/login", {
+      method: "POST",
+      body: { email, password },
+      token: "",
+    });
+    state.adminToken = result.token;
+    const me = await api("/api/auth/me", { token: state.adminToken });
+    if (me.role !== "admin") {
+      state.adminToken = "";
+      throw new Error("Эта учётная запись не админская. Используйте студенческий вход.");
+    }
+    state.user = me;
+    localStorage.setItem("adminToken", state.adminToken);
+    setDefaultReportWindow();
+    showScreen(SCREEN.ADMIN);
+    log(`Админ-вход: ${me.email}`);
+  } catch (err) {
+    state.adminToken = "";
+    state.user = null;
+    localStorage.removeItem("adminToken");
+    fmtError(err);
+  }
 }
 
 async function createSeat() {
-  await api("/api/admin/seats", {
-    method: "POST",
-    body: {
-      name: el.seatName.value.trim(),
-      zone: el.seatZone.value.trim(),
-      type: el.seatType.value.trim(),
-      active: true,
-    },
-  });
-  log("Seat created");
+  try {
+    const seat = await api("/api/admin/seats", {
+      method: "POST",
+      body: {
+        name: el.seatName.value.trim(),
+        zone: el.seatZone.value.trim(),
+        type: el.seatType.value.trim(),
+        active: true,
+      },
+    });
+    log(`Создано место #${seat.id} «${seat.name}»`);
+  } catch (err) { fmtError(err); }
 }
 
 async function updateSeat() {
-  const seatId = Number(el.seatId.value);
-  await api(`/api/admin/seats/${seatId}`, {
-    method: "PUT",
-    body: {
-      name: el.seatName.value.trim(),
-      zone: el.seatZone.value.trim(),
-      type: el.seatType.value.trim(),
-      active: true,
-    },
-  });
-  log(`Seat ${seatId} updated`);
+  try {
+    const id = parseInt(el.seatId.value, 10);
+    if (!id) throw new Error("Укажите ID места.");
+    const seat = await api(`/api/admin/seats/${id}`, {
+      method: "PUT",
+      body: {
+        name: el.seatName.value.trim(),
+        zone: el.seatZone.value.trim(),
+        type: el.seatType.value.trim(),
+        active: true,
+      },
+    });
+    log(`Обновлено место #${seat.id} «${seat.name}»`);
+  } catch (err) { fmtError(err); }
 }
 
 async function deleteSeat() {
-  const seatId = Number(el.seatId.value);
-  await api(`/api/admin/seats/${seatId}`, { method: "DELETE" });
-  log(`Seat ${seatId} deleted`);
-}
-
-async function updateLimit() {
-  const limit = Number(el.bookingLimit.value);
-  await api("/api/admin/settings/limit", {
-    method: "PUT",
-    body: { limit },
-  });
-  log(`Booking limit updated to ${limit}`);
+  try {
+    const id = parseInt(el.seatId.value, 10);
+    if (!id) throw new Error("Укажите ID места.");
+    await api(`/api/admin/seats/${id}`, { method: "DELETE" });
+    log(`Удалено место #${id}`);
+  } catch (err) { fmtError(err); }
 }
 
 async function loadAllBookings() {
-  const bookings = await api("/api/admin/bookings");
-  el.allBookingsTable.innerHTML = "";
-  bookings.forEach((booking) => {
-    const row = document.createElement("tr");
-    row.innerHTML = `
-      <td>${booking.id}</td>
-      <td>${booking.user_id}</td>
-      <td>${booking.seat_id}</td>
-      <td>${formatDT(booking.start_at)}</td>
-      <td>${formatDT(booking.end_at)}</td>
-      <td>
-        <select data-id="${booking.id}">
-          <option value="confirmed" ${booking.status === "confirmed" ? "selected" : ""}>confirmed</option>
-          <option value="canceled" ${booking.status === "canceled" ? "selected" : ""}>canceled</option>
-          <option value="completed" ${booking.status === "completed" ? "selected" : ""}>completed</option>
-        </select>
-      </td>
-      <td><button data-id="${booking.id}" class="secondary">Apply</button></td>
-    `;
-    const button = row.querySelector("button");
-    const select = row.querySelector("select");
-    button.addEventListener("click", async () => {
-      await api(`/api/admin/bookings/${booking.id}`, {
-        method: "PATCH",
-        body: { status: select.value },
-      });
-      log(`Booking ${booking.id} updated to ${select.value}`);
-      await loadAllBookings();
-      await loadMyBookings();
+  try {
+    const bookings = await api("/api/admin/bookings");
+    el.allBookingsTable.innerHTML = "";
+    if (!bookings.length) {
+      el.allBookingsTable.innerHTML = `<tr><td colspan="7" class="hint">Бронирований пока нет.</td></tr>`;
+      return;
+    }
+    for (const b of bookings) {
+      const tr = document.createElement("tr");
+      tr.innerHTML = `
+        <td>${b.id}</td>
+        <td>${b.display_name || `user#${b.user_id}`}</td>
+        <td>${b.seat_id}</td>
+        <td>${fmtDt(b.start_at)}</td>
+        <td>${fmtDt(b.end_at)}</td>
+        <td>${b.status}</td>
+        <td>${b.status === "confirmed" ? `<button data-id="${b.id}" class="danger">Отменить</button>` : ""}</td>`;
+      const btn = tr.querySelector("button");
+      if (btn) btn.addEventListener("click", () => adminCancelBooking(b.id));
+      el.allBookingsTable.appendChild(tr);
+    }
+    log(`Загружено броней: ${bookings.length}`);
+  } catch (err) { fmtError(err); }
+}
+
+async function adminCancelBooking(id) {
+  try {
+    await api(`/api/admin/bookings/${id}`, {
+      method: "PATCH",
+      body: { status: "canceled" },
     });
-    el.allBookingsTable.appendChild(row);
-  });
+    log(`Админ отменил бронь #${id}`);
+    await loadAllBookings();
+  } catch (err) { fmtError(err); }
+}
+
+async function updateLimit() {
+  try {
+    const limit = parseInt(el.bookingLimit.value, 10);
+    if (!limit) throw new Error("Укажите положительное число.");
+    await api("/api/admin/settings/limit", {
+      method: "PUT",
+      body: { limit },
+    });
+    log(`Лимит активных броней обновлён: ${limit}`);
+  } catch (err) { fmtError(err); }
 }
 
 async function runReport() {
-  const from = toISO(el.reportFrom.value);
-  const to = toISO(el.reportTo.value);
-  const report = await api(`/api/admin/reports?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`);
-  el.reportResult.textContent = JSON.stringify(report, null, 2);
-}
-
-function initTelegram() {
-  const tg = window.Telegram?.WebApp;
-  if (!tg) return;
-  tg.ready();
-  tg.expand();
-  const user = tg.initDataUnsafe?.user;
-  if (user) {
-    if (!el.regName.value) {
-      el.regName.value = [user.first_name, user.last_name].filter(Boolean).join(" ").trim() || `tg-${user.id}`;
-    }
-    if (!el.regEmail.value) {
-      el.regEmail.value = `${user.id}@tg.local`;
-    }
-  }
-}
-
-function bindActions() {
-  el.registerBtn.addEventListener("click", () => runAction(register));
-  el.loginBtn.addEventListener("click", () => runAction(login));
-  el.logoutBtn.addEventListener("click", logout);
-  el.loadSeatsBtn.addEventListener("click", () => runAction(loadAvailableSeats));
-  el.loadMyBookingsBtn.addEventListener("click", () => runAction(loadMyBookings));
-
-  el.createSeatBtn.addEventListener("click", () => runAction(createSeat));
-  el.updateSeatBtn.addEventListener("click", () => runAction(updateSeat));
-  el.deleteSeatBtn.addEventListener("click", () => runAction(deleteSeat));
-  el.updateLimitBtn.addEventListener("click", () => runAction(updateLimit));
-  el.loadAllBookingsBtn.addEventListener("click", () => runAction(loadAllBookings));
-  el.runReportBtn.addEventListener("click", () => runAction(runReport));
-}
-
-async function runAction(fn) {
   try {
-    await fn();
-  } catch (err) {
-    log(`Error: ${err.message}`);
-  }
+    const params = new URLSearchParams({
+      from: toISO(el.reportFrom.value),
+      to: toISO(el.reportTo.value),
+    });
+    const result = await api(`/api/admin/reports?${params.toString()}`);
+    el.reportResult.textContent = JSON.stringify(result, null, 2);
+    log(`Отчёт: всего ${result.total_bookings}, отменено ${result.canceled_bookings}`);
+  } catch (err) { fmtError(err); }
 }
 
-async function bootstrap() {
-  setDefaultWindow();
-  initTelegram();
-  bindActions();
-  await loadMe();
-  if (state.user) {
-    await runAction(loadMyBookings);
-    await runAction(loadAvailableSeats);
-    if (state.user.role === "admin") {
-      await runAction(loadAllBookings);
-    }
-  }
+// ----- bootstrap ----------------------------------------------------------
+
+function bindEvents() {
+  el.chooseStudentBtn.addEventListener("click", chooseStudent);
+  el.chooseAdminBtn.addEventListener("click", chooseAdmin);
+  el.backHomeBtn.addEventListener("click", goHome);
+
+  el.studentLoadSeatsBtn.addEventListener("click", loadStudentSeats);
+  el.studentRefreshBtn.addEventListener("click", loadStudentBookings);
+
+  el.adminLoginBtn.addEventListener("click", adminLogin);
+  el.adminPassword.addEventListener("keydown", (e) => { if (e.key === "Enter") adminLogin(); });
+
+  el.createSeatBtn.addEventListener("click", createSeat);
+  el.updateSeatBtn.addEventListener("click", updateSeat);
+  el.deleteSeatBtn.addEventListener("click", deleteSeat);
+  el.loadAllBookingsBtn.addEventListener("click", loadAllBookings);
+  el.updateLimitBtn.addEventListener("click", updateLimit);
+  el.runReportBtn.addEventListener("click", runReport);
 }
 
-bootstrap();
+async function init() {
+  bindEvents();
+  if (window.Telegram && window.Telegram.WebApp) {
+    try { window.Telegram.WebApp.expand(); } catch (_) {}
+  }
+
+  // Try to recover an existing screen state silently.
+  if (state.adminToken) {
+    try {
+      const me = await api("/api/auth/me", { token: state.adminToken });
+      if (me.role === "admin") {
+        state.user = me;
+        setDefaultReportWindow();
+        showScreen(SCREEN.ADMIN);
+        return;
+      }
+    } catch (_) { /* fallthrough to landing */ }
+    state.adminToken = "";
+    localStorage.removeItem("adminToken");
+  }
+  if (state.studentToken && state.deviceId) {
+    try {
+      await api("/api/auth/me", { token: state.studentToken });
+      setDefaultStudentWindow();
+      showScreen(SCREEN.STUDENT);
+      await loadStudentBookings();
+      return;
+    } catch (_) { /* fallthrough */ }
+    state.studentToken = "";
+    localStorage.removeItem("studentToken");
+  }
+  showScreen(SCREEN.LANDING);
+}
+
+init();

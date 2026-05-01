@@ -21,9 +21,14 @@ func New(db *sql.DB) *Repository {
 
 func (r *Repository) CreateUser(ctx context.Context, user *domain.User) error {
 	const query = `
-		INSERT INTO users (name, email, password_hash, role, created_at)
-		VALUES ($1, $2, $3, $4, $5)
+		INSERT INTO users (name, email, password_hash, role, device_id, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6)
 		RETURNING id`
+
+	var deviceID sql.NullString
+	if user.DeviceID != "" {
+		deviceID = sql.NullString{String: user.DeviceID, Valid: true}
+	}
 
 	if err := r.db.QueryRowContext(
 		ctx,
@@ -32,6 +37,7 @@ func (r *Repository) CreateUser(ctx context.Context, user *domain.User) error {
 		user.Email,
 		user.PasswordHash,
 		string(user.Role),
+		deviceID,
 		user.CreatedAt,
 	).Scan(&user.ID); err != nil {
 		if isUniqueViolation(err) {
@@ -42,50 +48,63 @@ func (r *Repository) CreateUser(ctx context.Context, user *domain.User) error {
 	return nil
 }
 
-func (r *Repository) GetUserByEmail(ctx context.Context, email string) (*domain.User, error) {
-	const query = `
-		SELECT id, name, email, password_hash, role, created_at
-		FROM users
-		WHERE email = $1`
+func (r *Repository) UpdateUserName(ctx context.Context, id int64, name string) error {
+	result, err := r.db.ExecContext(ctx, `UPDATE users SET name = $1 WHERE id = $2`, name, id)
+	if err != nil {
+		return err
+	}
+	if rows, _ := result.RowsAffected(); rows == 0 {
+		return domain.ErrNotFound
+	}
+	return nil
+}
 
+func (r *Repository) GetUserByEmail(ctx context.Context, email string) (*domain.User, error) {
+	return r.scanUser(ctx,
+		`SELECT id, name, email, password_hash, role, device_id, created_at FROM users WHERE email = $1`,
+		email)
+}
+
+func (r *Repository) GetUserByID(ctx context.Context, id int64) (*domain.User, error) {
+	return r.scanUser(ctx,
+		`SELECT id, name, email, password_hash, role, device_id, created_at FROM users WHERE id = $1`,
+		id)
+}
+
+func (r *Repository) GetUserByDeviceID(ctx context.Context, deviceID string) (*domain.User, error) {
+	return r.scanUser(ctx,
+		`SELECT id, name, email, password_hash, role, device_id, created_at FROM users WHERE device_id = $1`,
+		deriveString(deviceID))
+}
+
+func (r *Repository) scanUser(ctx context.Context, query string, arg any) (*domain.User, error) {
 	user := domain.User{}
-	if err := r.db.QueryRowContext(ctx, query, email).Scan(
+	var device sql.NullString
+	if err := r.db.QueryRowContext(ctx, query, arg).Scan(
 		&user.ID,
 		&user.Name,
 		&user.Email,
 		&user.PasswordHash,
 		&user.Role,
+		&device,
 		&user.CreatedAt,
 	); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, domain.ErrNotFound
 		}
 		return nil, err
+	}
+	if device.Valid {
+		user.DeviceID = device.String
 	}
 	return &user, nil
 }
 
-func (r *Repository) GetUserByID(ctx context.Context, id int64) (*domain.User, error) {
-	const query = `
-		SELECT id, name, email, password_hash, role, created_at
-		FROM users
-		WHERE id = $1`
-
-	user := domain.User{}
-	if err := r.db.QueryRowContext(ctx, query, id).Scan(
-		&user.ID,
-		&user.Name,
-		&user.Email,
-		&user.PasswordHash,
-		&user.Role,
-		&user.CreatedAt,
-	); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return nil, domain.ErrNotFound
-		}
-		return nil, err
+func deriveString(s string) any {
+	if s == "" {
+		return sql.NullString{}
 	}
-	return &user, nil
+	return s
 }
 
 func (r *Repository) CreateSession(ctx context.Context, session *domain.Session) error {
@@ -219,9 +238,13 @@ func (r *Repository) HasFutureBookingsForSeat(ctx context.Context, seatID int64,
 
 func (r *Repository) CreateBooking(ctx context.Context, booking *domain.Booking) error {
 	const query = `
-		INSERT INTO bookings (user_id, seat_id, start_at, end_at, status, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		INSERT INTO bookings (user_id, seat_id, start_at, end_at, status, display_name, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 		RETURNING id`
+	var displayName sql.NullString
+	if booking.DisplayName != "" {
+		displayName = sql.NullString{String: booking.DisplayName, Valid: true}
+	}
 	if err := r.db.QueryRowContext(
 		ctx,
 		query,
@@ -230,6 +253,7 @@ func (r *Repository) CreateBooking(ctx context.Context, booking *domain.Booking)
 		booking.StartAt,
 		booking.EndAt,
 		string(booking.Status),
+		displayName,
 		booking.CreatedAt,
 		booking.UpdatedAt,
 	).Scan(&booking.ID); err != nil {
@@ -243,10 +267,11 @@ func (r *Repository) CreateBooking(ctx context.Context, booking *domain.Booking)
 
 func (r *Repository) GetBookingByID(ctx context.Context, id int64) (*domain.Booking, error) {
 	const query = `
-		SELECT id, user_id, seat_id, start_at, end_at, status, created_at, updated_at
+		SELECT id, user_id, seat_id, start_at, end_at, status, display_name, created_at, updated_at
 		FROM bookings
 		WHERE id = $1`
 	booking := domain.Booking{}
+	var displayName sql.NullString
 	if err := r.db.QueryRowContext(ctx, query, id).Scan(
 		&booking.ID,
 		&booking.UserID,
@@ -254,6 +279,7 @@ func (r *Repository) GetBookingByID(ctx context.Context, id int64) (*domain.Book
 		&booking.StartAt,
 		&booking.EndAt,
 		&booking.Status,
+		&displayName,
 		&booking.CreatedAt,
 		&booking.UpdatedAt,
 	); err != nil {
@@ -262,16 +288,27 @@ func (r *Repository) GetBookingByID(ctx context.Context, id int64) (*domain.Book
 		}
 		return nil, err
 	}
+	if displayName.Valid {
+		booking.DisplayName = displayName.String
+	}
 	return &booking, nil
 }
 
 func (r *Repository) ListBookingsByUser(ctx context.Context, userID int64) ([]domain.Booking, error) {
-	const query = `
-		SELECT id, user_id, seat_id, start_at, end_at, status, created_at, updated_at
-		FROM bookings
-		WHERE user_id = $1
-		ORDER BY start_at DESC`
-	rows, err := r.db.QueryContext(ctx, query, userID)
+	return r.listBookings(ctx,
+		`SELECT id, user_id, seat_id, start_at, end_at, status, display_name, created_at, updated_at
+		 FROM bookings WHERE user_id = $1 ORDER BY start_at DESC`,
+		userID)
+}
+
+func (r *Repository) ListAllBookings(ctx context.Context) ([]domain.Booking, error) {
+	return r.listBookings(ctx,
+		`SELECT id, user_id, seat_id, start_at, end_at, status, display_name, created_at, updated_at
+		 FROM bookings ORDER BY start_at DESC`)
+}
+
+func (r *Repository) listBookings(ctx context.Context, query string, args ...any) ([]domain.Booking, error) {
+	rows, err := r.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -280,6 +317,7 @@ func (r *Repository) ListBookingsByUser(ctx context.Context, userID int64) ([]do
 	bookings := make([]domain.Booking, 0)
 	for rows.Next() {
 		booking := domain.Booking{}
+		var displayName sql.NullString
 		if err := rows.Scan(
 			&booking.ID,
 			&booking.UserID,
@@ -287,41 +325,14 @@ func (r *Repository) ListBookingsByUser(ctx context.Context, userID int64) ([]do
 			&booking.StartAt,
 			&booking.EndAt,
 			&booking.Status,
+			&displayName,
 			&booking.CreatedAt,
 			&booking.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}
-		bookings = append(bookings, booking)
-	}
-	return bookings, rows.Err()
-}
-
-func (r *Repository) ListAllBookings(ctx context.Context) ([]domain.Booking, error) {
-	const query = `
-		SELECT id, user_id, seat_id, start_at, end_at, status, created_at, updated_at
-		FROM bookings
-		ORDER BY start_at DESC`
-	rows, err := r.db.QueryContext(ctx, query)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	bookings := make([]domain.Booking, 0)
-	for rows.Next() {
-		booking := domain.Booking{}
-		if err := rows.Scan(
-			&booking.ID,
-			&booking.UserID,
-			&booking.SeatID,
-			&booking.StartAt,
-			&booking.EndAt,
-			&booking.Status,
-			&booking.CreatedAt,
-			&booking.UpdatedAt,
-		); err != nil {
-			return nil, err
+		if displayName.Valid {
+			booking.DisplayName = displayName.String
 		}
 		bookings = append(bookings, booking)
 	}

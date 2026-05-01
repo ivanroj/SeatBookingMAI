@@ -11,6 +11,8 @@ type Repository interface {
 	CreateUser(ctx context.Context, user *domain.User) error
 	GetUserByEmail(ctx context.Context, email string) (*domain.User, error)
 	GetUserByID(ctx context.Context, id int64) (*domain.User, error)
+	GetUserByDeviceID(ctx context.Context, deviceID string) (*domain.User, error)
+	UpdateUserName(ctx context.Context, id int64, name string) error
 
 	CreateSession(ctx context.Context, session *domain.Session) error
 	GetSessionByToken(ctx context.Context, token string) (*domain.Session, error)

@@ -511,6 +511,102 @@ func TestCorsPreflight(t *testing.T) {
 	}
 }
 
+func TestDeviceLoginCreatesAnonymousStudent(t *testing.T) {
+	h := newHarness(t)
+	deviceID := "dev-aaaa-bbbb-cccc-dddd"
+
+	first := h.request(http.MethodPost, "/api/auth/device", "", map[string]string{"device_id": deviceID})
+	if first.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(first.Body)
+		first.Body.Close()
+		t.Fatalf("first device login: expected 200, got %d %s", first.StatusCode, string(body))
+	}
+	var firstResp struct {
+		Token string `json:"token"`
+	}
+	h.decode(first, &firstResp)
+	if firstResp.Token == "" {
+		t.Fatal("expected non-empty token")
+	}
+
+	// Second call with the same device id reuses the user (no email collision)
+	// and just issues a new token.
+	second := h.request(http.MethodPost, "/api/auth/device", "", map[string]string{"device_id": deviceID})
+	if second.StatusCode != http.StatusOK {
+		t.Fatalf("second device login: expected 200, got %d", second.StatusCode)
+	}
+	var secondResp struct {
+		Token string `json:"token"`
+	}
+	h.decode(second, &secondResp)
+	if secondResp.Token == "" || secondResp.Token == firstResp.Token {
+		t.Fatalf("expected fresh non-empty token, got %q (was %q)", secondResp.Token, firstResp.Token)
+	}
+
+	// /api/auth/me must report this hidden user with role=user and a device_id.
+	me := h.request(http.MethodGet, "/api/auth/me", secondResp.Token, nil)
+	if me.StatusCode != http.StatusOK {
+		t.Fatalf("me: expected 200, got %d", me.StatusCode)
+	}
+	var u domain.User
+	h.decode(me, &u)
+	if u.Role != domain.RoleUser {
+		t.Fatalf("expected role=user, got %q", u.Role)
+	}
+	if u.DeviceID != deviceID {
+		t.Fatalf("expected device_id to round-trip, got %q", u.DeviceID)
+	}
+}
+
+func TestDeviceLoginRejectsShortDeviceID(t *testing.T) {
+	h := newHarness(t)
+	resp := h.request(http.MethodPost, "/api/auth/device", "", map[string]string{"device_id": "short"})
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+}
+
+func TestStudentBookingStoresDisplayName(t *testing.T) {
+	h := newHarness(t)
+	deviceID := "dev-display-name-test-xxxx"
+	dl := h.request(http.MethodPost, "/api/auth/device", "", map[string]string{"device_id": deviceID})
+	if dl.StatusCode != http.StatusOK {
+		t.Fatalf("device login: %d", dl.StatusCode)
+	}
+	var loginResp struct {
+		Token string `json:"token"`
+	}
+	h.decode(dl, &loginResp)
+
+	seat := h.repo.MustCreateSeat("S-1")
+	resp := h.request(http.MethodPost, "/api/bookings", loginResp.Token, map[string]any{
+		"seat_id":      seat.ID,
+		"start_at":     h.now.Add(2 * time.Hour).Format(time.RFC3339),
+		"end_at":       h.now.Add(3 * time.Hour).Format(time.RFC3339),
+		"display_name": "Иван Иванов",
+	})
+	if resp.StatusCode != http.StatusCreated {
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		t.Fatalf("create booking: expected 201, got %d %s", resp.StatusCode, string(body))
+	}
+	var booking domain.Booking
+	h.decode(resp, &booking)
+	if booking.DisplayName != "Иван Иванов" {
+		t.Fatalf("expected display_name to round-trip, got %q", booking.DisplayName)
+	}
+
+	// The hidden student user's name should follow the latest display name
+	// so admin views are readable.
+	me := h.request(http.MethodGet, "/api/auth/me", loginResp.Token, nil)
+	var u domain.User
+	h.decode(me, &u)
+	if u.Name != "Иван Иванов" {
+		t.Fatalf("expected user name to track display name, got %q", u.Name)
+	}
+}
+
 // issueToken creates a session in the fake repo for the given user and returns
 // the bearer token. This avoids relying on bcrypt-hashed seed passwords in the
 // admin path of tests.

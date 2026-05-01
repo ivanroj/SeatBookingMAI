@@ -1,109 +1,144 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="ru">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Coworking Seat Booking</title>
+  <title>Бронирование мест в коворкинге</title>
   <link rel="stylesheet" href="styles.css">
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
 </head>
 <body>
   <main class="layout">
     <header class="topbar">
-      <h1>Coworking Booking</h1>
-      <div id="statusBadge" class="badge">Signed out</div>
+      <h1 id="screenTitle">Бронирование мест</h1>
+      <div class="topbar-actions">
+        <span id="statusBadge" class="badge">Не выбрана роль</span>
+        <button id="backHomeBtn" class="secondary" hidden>← Сменить роль</button>
+      </div>
     </header>
 
-    <section class="panel" id="authPanel">
-      <h2>Authentication</h2>
-      <div class="grid">
-        <label>Name<input id="regName" type="text" placeholder="User Name"></label>
-        <label>Email<input id="regEmail" type="email" placeholder="user@mai.ru"></label>
-        <label>Password<input id="regPassword" type="password" placeholder="password"></label>
+    <!-- =========================== -->
+    <!-- Лендинг: выбор роли          -->
+    <!-- =========================== -->
+    <section class="panel landing" id="landingPanel">
+      <h2>Кто вы?</h2>
+      <p class="hint">Выберите, как вы хотите работать с системой бронирования.</p>
+      <div class="role-cards">
+        <button id="chooseStudentBtn" class="role-card role-student" type="button">
+          <span class="role-card-emoji" aria-hidden="true">🎓</span>
+          <span class="role-card-title">Я студент / сотрудник</span>
+          <span class="role-card-sub">Без логина: введите имя и забронируйте место.</span>
+        </button>
+        <button id="chooseAdminBtn" class="role-card role-admin" type="button">
+          <span class="role-card-emoji" aria-hidden="true">🛠</span>
+          <span class="role-card-title">Я администратор</span>
+          <span class="role-card-sub">Вход по логину: управление местами, бронями и отчётами.</span>
+        </button>
       </div>
-      <div class="actions">
-        <button id="registerBtn">Register</button>
-        <button id="loginBtn" class="secondary">Login</button>
-        <button id="logoutBtn" class="danger" hidden>Logout</button>
-      </div>
-      <p class="hint">Seed admin: <code>admin@mai.ru</code> / <code>admin123</code></p>
     </section>
 
-    <section class="panel" id="bookingPanel" hidden>
-      <h2>User Bookings</h2>
+    <!-- =========================== -->
+    <!-- Студенческий экран           -->
+    <!-- =========================== -->
+    <section class="panel" id="studentBookingPanel" hidden>
+      <h2>Забронировать место</h2>
+      <p class="hint">Введите своё имя, выберите интервал — система покажет свободные места.</p>
       <div class="grid">
-        <label>Start time<input id="startAt" type="datetime-local"></label>
-        <label>End time<input id="endAt" type="datetime-local"></label>
+        <label>Имя<input id="studentName" type="text" placeholder="Иван Иванов" autocomplete="name"></label>
+        <label>Начало<input id="studentStartAt" type="datetime-local"></label>
+        <label>Конец<input id="studentEndAt" type="datetime-local"></label>
       </div>
       <div class="actions">
-        <button id="loadSeatsBtn">Load Available Seats</button>
-        <button id="loadMyBookingsBtn" class="secondary">Refresh My Bookings</button>
+        <button id="studentLoadSeatsBtn">Показать свободные места</button>
+        <button id="studentRefreshBtn" class="secondary">Обновить мои брони</button>
       </div>
       <div class="tables">
         <div>
-          <h3>Available Seats</h3>
+          <h3>Свободные места</h3>
           <table>
-            <thead><tr><th>ID</th><th>Name</th><th>Zone</th><th>Type</th><th></th></tr></thead>
-            <tbody id="seatsTable"></tbody>
+            <thead><tr><th>ID</th><th>Название</th><th>Зона</th><th>Тип</th><th></th></tr></thead>
+            <tbody id="studentSeatsTable"><tr><td colspan="5" class="hint">Нажмите «Показать свободные места».</td></tr></tbody>
           </table>
         </div>
         <div>
-          <h3>My Bookings</h3>
+          <h3>Мои брони (на этом устройстве)</h3>
           <table>
-            <thead><tr><th>ID</th><th>Seat</th><th>Start</th><th>End</th><th>Status</th><th></th></tr></thead>
-            <tbody id="myBookingsTable"></tbody>
+            <thead><tr><th>ID</th><th>Место</th><th>Имя</th><th>Начало</th><th>Конец</th><th>Статус</th><th></th></tr></thead>
+            <tbody id="studentBookingsTable"><tr><td colspan="7" class="hint">Пока нет броней.</td></tr></tbody>
           </table>
         </div>
       </div>
     </section>
 
+    <!-- =========================== -->
+    <!-- Админ: вход                  -->
+    <!-- =========================== -->
+    <section class="panel" id="adminLoginPanel" hidden>
+      <h2>Вход для администратора</h2>
+      <div class="grid">
+        <label>Email<input id="adminEmail" type="email" placeholder="admin@mai.ru" autocomplete="username"></label>
+        <label>Пароль<input id="adminPassword" type="password" placeholder="********" autocomplete="current-password"></label>
+      </div>
+      <div class="actions">
+        <button id="adminLoginBtn">Войти</button>
+      </div>
+      <p class="hint">Тестовая учётка: <code>admin@mai.ru</code> / <code>admin123</code>.</p>
+    </section>
+
+    <!-- =========================== -->
+    <!-- Админ: панель                -->
+    <!-- =========================== -->
     <section class="panel" id="adminPanel" hidden>
-      <h2>Admin</h2>
+      <h2>Управление местами (UC-5)</h2>
       <div class="grid">
-        <label>Seat ID (for update/delete)<input id="seatId" type="number" min="1" placeholder="1"></label>
-        <label>Seat name<input id="seatName" type="text" placeholder="C-01"></label>
-        <label>Zone<input id="seatZone" type="text" placeholder="C"></label>
-        <label>Type<input id="seatType" type="text" placeholder="desk"></label>
+        <label>ID места (для обновления / удаления)<input id="seatId" type="number" min="1" placeholder="1"></label>
+        <label>Название<input id="seatName" type="text" placeholder="C-01"></label>
+        <label>Зона<input id="seatZone" type="text" placeholder="C"></label>
+        <label>Тип<input id="seatType" type="text" placeholder="desk"></label>
       </div>
       <div class="actions">
-        <button id="createSeatBtn">Create Seat</button>
-        <button id="updateSeatBtn" class="secondary">Update Seat</button>
-        <button id="deleteSeatBtn" class="danger">Delete Seat</button>
+        <button id="createSeatBtn">Создать место</button>
+        <button id="updateSeatBtn" class="secondary">Обновить место</button>
+        <button id="deleteSeatBtn" class="danger">Удалить место</button>
       </div>
 
-      <div class="grid compact">
-        <label>Booking limit<input id="bookingLimit" type="number" min="1" max="100" value="3"></label>
-      </div>
+      <h2>Все бронирования (UC-6)</h2>
       <div class="actions">
-        <button id="updateLimitBtn">Update Limit</button>
-        <button id="loadAllBookingsBtn" class="secondary">Load All Bookings</button>
+        <button id="loadAllBookingsBtn">Загрузить все брони</button>
       </div>
-
-      <div class="grid">
-        <label>Report from<input id="reportFrom" type="datetime-local"></label>
-        <label>Report to<input id="reportTo" type="datetime-local"></label>
-      </div>
-      <div class="actions">
-        <button id="runReportBtn">Run Report</button>
-      </div>
-
       <div class="tables">
         <div>
-          <h3>All Bookings</h3>
           <table>
-            <thead><tr><th>ID</th><th>User</th><th>Seat</th><th>Start</th><th>End</th><th>Status</th><th></th></tr></thead>
-            <tbody id="allBookingsTable"></tbody>
+            <thead><tr><th>ID</th><th>Студент</th><th>Место</th><th>Начало</th><th>Конец</th><th>Статус</th><th></th></tr></thead>
+            <tbody id="allBookingsTable"><tr><td colspan="7" class="hint">Нажмите «Загрузить все брони».</td></tr></tbody>
           </table>
         </div>
-        <div>
-          <h3>Report Result</h3>
-          <pre id="reportResult">{}</pre>
-        </div>
+      </div>
+
+      <h2>Лимит активных броней (UC-7)</h2>
+      <div class="grid compact">
+        <label>Лимит<input id="bookingLimit" type="number" min="1" max="100" value="3"></label>
+      </div>
+      <div class="actions">
+        <button id="updateLimitBtn">Обновить лимит</button>
+      </div>
+
+      <h2>Отчёт (UC-8)</h2>
+      <div class="grid">
+        <label>С<input id="reportFrom" type="datetime-local"></label>
+        <label>По<input id="reportTo" type="datetime-local"></label>
+      </div>
+      <div class="actions">
+        <button id="runReportBtn">Сформировать отчёт</button>
+      </div>
+      <div>
+        <h3>Результат</h3>
+        <pre id="reportResult">{}</pre>
       </div>
     </section>
 
     <section class="panel log">
-      <h2>Log</h2>
+      <h2>Лог</h2>
       <pre id="logOutput"></pre>
     </section>
   </main>

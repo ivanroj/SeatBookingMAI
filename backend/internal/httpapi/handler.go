@@ -33,6 +33,7 @@ func NewHandler(svc *app.Service) http.Handler {
 
 	r.Post("/api/auth/register", h.register)
 	r.Post("/api/auth/login", h.login)
+	r.Post("/api/auth/device", h.deviceLogin)
 
 	r.Group(func(g chi.Router) {
 		g.Use(h.authMiddleware)
@@ -101,6 +102,22 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"token": token})
 }
 
+func (h *Handler) deviceLogin(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		DeviceID string `json:"device_id"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeAppError(w, domain.ErrInvalidInput)
+		return
+	}
+	token, err := h.svc.LoginAsDevice(r.Context(), req.DeviceID)
+	if err != nil {
+		writeAppError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"token": token})
+}
+
 func (h *Handler) availableSeats(w http.ResponseWriter, r *http.Request) {
 	startAt, endAt, err := parseWindowQuery(r)
 	if err != nil {
@@ -123,9 +140,10 @@ func (h *Handler) me(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) createBooking(w http.ResponseWriter, r *http.Request) {
 	user := currentUser(r.Context())
 	var req struct {
-		SeatID  int64  `json:"seat_id"`
-		StartAt string `json:"start_at"`
-		EndAt   string `json:"end_at"`
+		SeatID      int64  `json:"seat_id"`
+		StartAt     string `json:"start_at"`
+		EndAt       string `json:"end_at"`
+		DisplayName string `json:"display_name"`
 	}
 	if err := decodeJSON(r, &req); err != nil {
 		writeAppError(w, domain.ErrInvalidInput)
@@ -143,9 +161,10 @@ func (h *Handler) createBooking(w http.ResponseWriter, r *http.Request) {
 	}
 
 	booking, err := h.svc.CreateBooking(r.Context(), user.ID, app.CreateBookingInput{
-		SeatID:  req.SeatID,
-		StartAt: startAt,
-		EndAt:   endAt,
+		SeatID:      req.SeatID,
+		StartAt:     startAt,
+		EndAt:       endAt,
+		DisplayName: req.DisplayName,
 	})
 	if err != nil {
 		writeAppError(w, err)

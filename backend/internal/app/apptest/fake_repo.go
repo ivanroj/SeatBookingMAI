@@ -18,12 +18,13 @@ import (
 type FakeRepo struct {
 	mu sync.Mutex
 
-	users        map[int64]domain.User
-	usersByEmail map[string]int64
-	sessions     map[string]domain.Session
-	seats        map[int64]domain.Seat
-	bookings     map[int64]domain.Booking
-	settings     domain.Settings
+	users           map[int64]domain.User
+	usersByEmail    map[string]int64
+	usersByDeviceID map[string]int64
+	sessions        map[string]domain.Session
+	seats           map[int64]domain.Seat
+	bookings        map[int64]domain.Booking
+	settings        domain.Settings
 
 	nextUserID    int64
 	nextSeatID    int64
@@ -33,15 +34,16 @@ type FakeRepo struct {
 // NewFakeRepo returns an empty repo with a default booking limit of 3.
 func NewFakeRepo() *FakeRepo {
 	return &FakeRepo{
-		users:         map[int64]domain.User{},
-		usersByEmail:  map[string]int64{},
-		sessions:      map[string]domain.Session{},
-		seats:         map[int64]domain.Seat{},
-		bookings:      map[int64]domain.Booking{},
-		settings:      domain.Settings{BookingLimit: 3},
-		nextUserID:    1,
-		nextSeatID:    1,
-		nextBookingID: 1,
+		users:           map[int64]domain.User{},
+		usersByEmail:    map[string]int64{},
+		usersByDeviceID: map[string]int64{},
+		sessions:        map[string]domain.Session{},
+		seats:           map[int64]domain.Seat{},
+		bookings:        map[int64]domain.Booking{},
+		settings:        domain.Settings{BookingLimit: 3},
+		nextUserID:      1,
+		nextSeatID:      1,
+		nextBookingID:   1,
 	}
 }
 
@@ -110,10 +112,41 @@ func (r *FakeRepo) CreateUser(_ context.Context, user *domain.User) error {
 	if _, ok := r.usersByEmail[user.Email]; ok {
 		return domain.ErrEmailTaken
 	}
+	if user.DeviceID != "" {
+		if _, ok := r.usersByDeviceID[user.DeviceID]; ok {
+			return domain.ErrEmailTaken
+		}
+	}
 	user.ID = r.nextUserID
 	r.nextUserID++
 	r.users[user.ID] = *user
 	r.usersByEmail[user.Email] = user.ID
+	if user.DeviceID != "" {
+		r.usersByDeviceID[user.DeviceID] = user.ID
+	}
+	return nil
+}
+
+func (r *FakeRepo) GetUserByDeviceID(_ context.Context, deviceID string) (*domain.User, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	id, ok := r.usersByDeviceID[deviceID]
+	if !ok {
+		return nil, domain.ErrNotFound
+	}
+	user := r.users[id]
+	return &user, nil
+}
+
+func (r *FakeRepo) UpdateUserName(_ context.Context, id int64, name string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	user, ok := r.users[id]
+	if !ok {
+		return domain.ErrNotFound
+	}
+	user.Name = name
+	r.users[id] = user
 	return nil
 }
 
