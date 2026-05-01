@@ -351,7 +351,13 @@ func TestAdminSeatLifecycle(t *testing.T) {
 
 	// Create
 	resp := h.request(http.MethodPost, "/api/admin/seats", token, map[string]any{
-		"name": "X-1", "zone": "X", "type": "desk", "active": true,
+		"coworking_id": h.repo.DefaultCoworkingID(),
+		"name":         "X-1",
+		"zone":         "X",
+		"type":         "desk",
+		"grid_x":       4,
+		"grid_y":       4,
+		"active":       true,
 	})
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("create seat: expected 201, got %d", resp.StatusCode)
@@ -364,7 +370,13 @@ func TestAdminSeatLifecycle(t *testing.T) {
 
 	// Update
 	resp = h.request(http.MethodPut, fmt.Sprintf("/api/admin/seats/%d", seat.ID), token, map[string]any{
-		"name": "X-1-upd", "zone": "Y", "type": "focus", "active": false,
+		"coworking_id": h.repo.DefaultCoworkingID(),
+		"name":         "X-1-upd",
+		"zone":         "Y",
+		"type":         "focus",
+		"grid_x":       4,
+		"grid_y":       4,
+		"active":       false,
 	})
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("update seat: expected 200, got %d", resp.StatusCode)
@@ -622,4 +634,148 @@ func issueToken(t *testing.T, h *harness, userID int64) string {
 		t.Fatalf("create session: %v", err)
 	}
 	return token
+}
+
+func TestCoworkingsAdminCRUDAndPublicList(t *testing.T) {
+	h := newHarness(t)
+	admin := h.repo.MustCreateUser("admin@mai.ru", domain.RoleAdmin)
+	adminToken := issueToken(t, h, admin.ID)
+
+	// Public list (no auth) — only the seeded default coworking.
+	resp := h.request(http.MethodGet, "/api/coworkings", "", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("public list: expected 200, got %d", resp.StatusCode)
+	}
+	var initial []domain.Coworking
+	h.decode(resp, &initial)
+	if len(initial) != 1 {
+		t.Fatalf("expected 1 seeded coworking, got %d", len(initial))
+	}
+
+	// Create a new one.
+	resp = h.request(http.MethodPost, "/api/admin/coworkings", adminToken, map[string]any{
+		"name":     "Север",
+		"capacity": 12,
+	})
+	if resp.StatusCode != http.StatusCreated {
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		t.Fatalf("create coworking: expected 201, got %d (%s)", resp.StatusCode, string(body))
+	}
+	var created domain.Coworking
+	h.decode(resp, &created)
+	if created.Name != "Север" || created.Capacity != 12 {
+		t.Fatalf("unexpected coworking: %#v", created)
+	}
+
+	// Update.
+	resp = h.request(http.MethodPatch, fmt.Sprintf("/api/admin/coworkings/%d", created.ID), adminToken, map[string]any{
+		"name":     "Северный",
+		"capacity": 16,
+	})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("update coworking: expected 200, got %d", resp.StatusCode)
+	}
+	var updated domain.Coworking
+	h.decode(resp, &updated)
+	if updated.Name != "Северный" || updated.Capacity != 16 {
+		t.Fatalf("unexpected updated coworking: %#v", updated)
+	}
+
+	// Delete.
+	resp = h.request(http.MethodDelete, fmt.Sprintf("/api/admin/coworkings/%d", created.ID), adminToken, nil)
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("delete coworking: expected 204, got %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+}
+
+func TestCoworkingMapShowsBusyForBookedSeats(t *testing.T) {
+	h := newHarness(t)
+	owner := h.repo.MustCreateUser("device-X@local.invalid", domain.RoleUser)
+	ownerToken := issueToken(t, h, owner.ID)
+
+	free := h.repo.MustCreateSeat("A-01")
+	booked := h.repo.MustCreateSeat("A-02")
+	h.repo.MustCreateBooking(domain.Booking{
+		UserID:  owner.ID,
+		SeatID:  booked.ID,
+		StartAt: h.now.Add(2 * time.Hour),
+		EndAt:   h.now.Add(3 * time.Hour),
+		Status:  domain.BookingStatusConfirmed,
+	})
+
+	q := url.Values{}
+	q.Set("start_at", h.now.Add(2*time.Hour+15*time.Minute).Format(time.RFC3339))
+	q.Set("end_at", h.now.Add(2*time.Hour+45*time.Minute).Format(time.RFC3339))
+	resp := h.request(http.MethodGet, fmt.Sprintf("/api/coworkings/%d/map?%s", h.repo.DefaultCoworkingID(), q.Encode()), ownerToken, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("map: expected 200, got %d", resp.StatusCode)
+	}
+	var seats []struct {
+		ID     int64 `json:"id"`
+		IsBusy bool  `json:"is_busy"`
+	}
+	h.decode(resp, &seats)
+	gotFree, gotBusy := false, false
+	for _, s := range seats {
+		switch s.ID {
+		case free.ID:
+			if !s.IsBusy {
+				gotFree = true
+			}
+		case booked.ID:
+			if s.IsBusy {
+				gotBusy = true
+			}
+		}
+	}
+	if !gotFree || !gotBusy {
+		t.Fatalf("expected one free and one busy in map, got %#v", seats)
+	}
+}
+
+func TestAdminLogsGatedFor403(t *testing.T) {
+	h := newHarness(t)
+	student := h.repo.MustCreateUser("device-Z@local.invalid", domain.RoleUser)
+	studentToken := issueToken(t, h, student.ID)
+	admin := h.repo.MustCreateUser("admin@mai.ru", domain.RoleAdmin)
+	adminToken := issueToken(t, h, admin.ID)
+
+	// Trigger one event so the ring buffer has something to show.
+	h.svc.LogEvent("test.event", map[string]any{"hello": "world"})
+
+	// Unauthenticated → 401.
+	resp := h.request(http.MethodGet, "/api/admin/logs", "", nil)
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("anon: expected 401, got %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	// Student → 403.
+	resp = h.request(http.MethodGet, "/api/admin/logs", studentToken, nil)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("student: expected 403, got %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	// Admin → 200 with at least our event.
+	resp = h.request(http.MethodGet, "/api/admin/logs", adminToken, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("admin: expected 200, got %d", resp.StatusCode)
+	}
+	var logs []struct {
+		Event string `json:"event"`
+	}
+	h.decode(resp, &logs)
+	found := false
+	for _, l := range logs {
+		if l.Event == "test.event" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected test.event in admin logs, got %#v", logs)
+	}
 }

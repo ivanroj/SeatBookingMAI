@@ -22,29 +22,55 @@ type FakeRepo struct {
 	usersByEmail    map[string]int64
 	usersByDeviceID map[string]int64
 	sessions        map[string]domain.Session
+	coworkings      map[int64]domain.Coworking
+	coworkingsName  map[string]int64
 	seats           map[int64]domain.Seat
 	bookings        map[int64]domain.Booking
 	settings        domain.Settings
 
-	nextUserID    int64
-	nextSeatID    int64
-	nextBookingID int64
+	nextUserID      int64
+	nextCoworkingID int64
+	nextSeatID      int64
+	nextBookingID   int64
 }
 
-// NewFakeRepo returns an empty repo with a default booking limit of 3.
+// NewFakeRepo returns an empty repo with a default booking limit of 3 and a
+// pre-seeded default coworking so existing tests that don't care about
+// coworkings can still create seats with `MustCreateSeat`.
 func NewFakeRepo() *FakeRepo {
-	return &FakeRepo{
+	r := &FakeRepo{
 		users:           map[int64]domain.User{},
 		usersByEmail:    map[string]int64{},
 		usersByDeviceID: map[string]int64{},
 		sessions:        map[string]domain.Session{},
+		coworkings:      map[int64]domain.Coworking{},
+		coworkingsName:  map[string]int64{},
 		seats:           map[int64]domain.Seat{},
 		bookings:        map[int64]domain.Booking{},
 		settings:        domain.Settings{BookingLimit: 3},
 		nextUserID:      1,
+		nextCoworkingID: 1,
 		nextSeatID:      1,
 		nextBookingID:   1,
 	}
+	defaultCw := domain.Coworking{
+		Name:      "Default",
+		Capacity:  100,
+		CreatedAt: time.Now().UTC(),
+		UpdatedAt: time.Now().UTC(),
+	}
+	if err := r.CreateCoworking(context.Background(), &defaultCw); err != nil {
+		panic(err)
+	}
+	return r
+}
+
+// DefaultCoworkingID returns the seeded default coworking id (=1) for tests
+// that just want to throw a seat in somewhere.
+func (r *FakeRepo) DefaultCoworkingID() int64 {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return 1
 }
 
 // SetBookingLimitDirect bypasses the public API to seed the limit in tests.
@@ -76,15 +102,22 @@ func (r *FakeRepo) MustCreateUser(email string, role domain.Role) domain.User {
 	return user
 }
 
-// MustCreateSeat inserts an active "desk" seat in zone A.
+// MustCreateSeat inserts an active "desk" seat in zone A in the default
+// coworking. The grid position is auto-assigned per call.
 func (r *FakeRepo) MustCreateSeat(name string) domain.Seat {
+	r.mu.Lock()
+	x := r.nextSeatID - 1
+	r.mu.Unlock()
 	seat := domain.Seat{
-		Name:      name,
-		Zone:      "A",
-		Type:      "desk",
-		Active:    true,
-		CreatedAt: time.Now().UTC(),
-		UpdatedAt: time.Now().UTC(),
+		CoworkingID: 1,
+		Name:        name,
+		Zone:        "A",
+		Type:        "desk",
+		GridX:       int(x % 8),
+		GridY:       int(x / 8),
+		Active:      true,
+		CreatedAt:   time.Now().UTC(),
+		UpdatedAt:   time.Now().UTC(),
 	}
 	if err := r.CreateSeat(context.Background(), &seat); err != nil {
 		panic(err)
@@ -188,11 +221,83 @@ func (r *FakeRepo) GetSessionByToken(_ context.Context, token string) (*domain.S
 	return &session, nil
 }
 
-func (r *FakeRepo) ListSeats(_ context.Context) ([]domain.Seat, error) {
+func (r *FakeRepo) ListCoworkings(_ context.Context) ([]domain.Coworking, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]domain.Coworking, 0, len(r.coworkings))
+	for _, c := range r.coworkings {
+		out = append(out, c)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out, nil
+}
+
+func (r *FakeRepo) GetCoworkingByID(_ context.Context, id int64) (*domain.Coworking, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	c, ok := r.coworkings[id]
+	if !ok {
+		return nil, domain.ErrNotFound
+	}
+	return &c, nil
+}
+
+func (r *FakeRepo) CreateCoworking(_ context.Context, c *domain.Coworking) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.coworkingsName[c.Name]; ok {
+		return domain.ErrConflictState
+	}
+	c.ID = r.nextCoworkingID
+	r.nextCoworkingID++
+	r.coworkings[c.ID] = *c
+	r.coworkingsName[c.Name] = c.ID
+	return nil
+}
+
+func (r *FakeRepo) UpdateCoworking(_ context.Context, c *domain.Coworking) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	old, ok := r.coworkings[c.ID]
+	if !ok {
+		return domain.ErrNotFound
+	}
+	if c.Name != old.Name {
+		if _, taken := r.coworkingsName[c.Name]; taken {
+			return domain.ErrConflictState
+		}
+		delete(r.coworkingsName, old.Name)
+		r.coworkingsName[c.Name] = c.ID
+	}
+	r.coworkings[c.ID] = *c
+	return nil
+}
+
+func (r *FakeRepo) DeleteCoworking(_ context.Context, id int64) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	c, ok := r.coworkings[id]
+	if !ok {
+		return domain.ErrNotFound
+	}
+	for seatID, seat := range r.seats {
+		if seat.CoworkingID == id {
+			delete(r.seats, seatID)
+		}
+	}
+	delete(r.coworkings, id)
+	delete(r.coworkingsName, c.Name)
+	return nil
+}
+
+func (r *FakeRepo) ListSeats(_ context.Context, coworkingID int64) ([]domain.Seat, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	out := make([]domain.Seat, 0, len(r.seats))
 	for _, seat := range r.seats {
+		if coworkingID > 0 && seat.CoworkingID != coworkingID {
+			continue
+		}
 		out = append(out, seat)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
@@ -212,6 +317,14 @@ func (r *FakeRepo) GetSeatByID(_ context.Context, id int64) (*domain.Seat, error
 func (r *FakeRepo) CreateSeat(_ context.Context, seat *domain.Seat) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	for _, existing := range r.seats {
+		if existing.CoworkingID == seat.CoworkingID && existing.GridX == seat.GridX && existing.GridY == seat.GridY {
+			return domain.ErrConflictState
+		}
+		if existing.CoworkingID == seat.CoworkingID && existing.Name == seat.Name {
+			return domain.ErrConflictState
+		}
+	}
 	seat.ID = r.nextSeatID
 	r.nextSeatID++
 	r.seats[seat.ID] = *seat
@@ -223,6 +336,17 @@ func (r *FakeRepo) UpdateSeat(_ context.Context, seat *domain.Seat) error {
 	defer r.mu.Unlock()
 	if _, ok := r.seats[seat.ID]; !ok {
 		return domain.ErrNotFound
+	}
+	for id, existing := range r.seats {
+		if id == seat.ID {
+			continue
+		}
+		if existing.CoworkingID == seat.CoworkingID && existing.GridX == seat.GridX && existing.GridY == seat.GridY {
+			return domain.ErrConflictState
+		}
+		if existing.CoworkingID == seat.CoworkingID && existing.Name == seat.Name {
+			return domain.ErrConflictState
+		}
 	}
 	r.seats[seat.ID] = *seat
 	return nil

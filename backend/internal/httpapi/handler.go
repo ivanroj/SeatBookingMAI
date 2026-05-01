@@ -35,10 +35,13 @@ func NewHandler(svc *app.Service) http.Handler {
 	r.Post("/api/auth/login", h.login)
 	r.Post("/api/auth/device", h.deviceLogin)
 
+	r.Get("/api/coworkings", h.listCoworkings)
+
 	r.Group(func(g chi.Router) {
 		g.Use(h.authMiddleware)
 		g.Get("/api/auth/me", h.me)
 		g.Get("/api/seats/available", h.availableSeats)
+		g.Get("/api/coworkings/{id}/map", h.coworkingMap)
 		g.Post("/api/bookings", h.createBooking)
 		g.Get("/api/bookings/me", h.myBookings)
 		g.Delete("/api/bookings/{id}", h.cancelBooking)
@@ -46,6 +49,12 @@ func NewHandler(svc *app.Service) http.Handler {
 
 	r.Group(func(g chi.Router) {
 		g.Use(h.authMiddleware, h.adminMiddleware)
+		g.Get("/api/admin/coworkings", h.adminListCoworkings)
+		g.Post("/api/admin/coworkings", h.adminCreateCoworking)
+		g.Patch("/api/admin/coworkings/{id}", h.adminUpdateCoworking)
+		g.Delete("/api/admin/coworkings/{id}", h.adminDeleteCoworking)
+		g.Get("/api/admin/coworkings/{id}/seats", h.adminListSeats)
+
 		g.Post("/api/admin/seats", h.createSeat)
 		g.Put("/api/admin/seats/{id}", h.updateSeat)
 		g.Delete("/api/admin/seats/{id}", h.deleteSeat)
@@ -55,6 +64,7 @@ func NewHandler(svc *app.Service) http.Handler {
 
 		g.Put("/api/admin/settings/limit", h.updateLimit)
 		g.Get("/api/admin/reports", h.report)
+		g.Get("/api/admin/logs", h.adminLogs)
 	})
 
 	return r
@@ -124,12 +134,132 @@ func (h *Handler) availableSeats(w http.ResponseWriter, r *http.Request) {
 		writeAppError(w, domain.ErrInvalidInput)
 		return
 	}
-	seats, err := h.svc.ListAvailableSeats(r.Context(), startAt, endAt)
+	coworkingID, _ := strconv.ParseInt(r.URL.Query().Get("coworking_id"), 10, 64)
+	seats, err := h.svc.ListAvailableSeats(r.Context(), coworkingID, startAt, endAt)
 	if err != nil {
 		writeAppError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, seats)
+}
+
+func (h *Handler) listCoworkings(w http.ResponseWriter, r *http.Request) {
+	list, err := h.svc.ListCoworkings(r.Context())
+	if err != nil {
+		writeAppError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, list)
+}
+
+func (h *Handler) coworkingMap(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		writeAppError(w, domain.ErrInvalidInput)
+		return
+	}
+	startAt, endAt, err := parseWindowQuery(r)
+	if err != nil {
+		writeAppError(w, domain.ErrInvalidInput)
+		return
+	}
+	seats, err := h.svc.ListSeatsForMap(r.Context(), id, startAt, endAt)
+	if err != nil {
+		writeAppError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, seats)
+}
+
+func (h *Handler) adminListCoworkings(w http.ResponseWriter, r *http.Request) {
+	list, err := h.svc.ListCoworkings(r.Context())
+	if err != nil {
+		writeAppError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, list)
+}
+
+func (h *Handler) adminCreateCoworking(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Name     string `json:"name"`
+		Capacity int    `json:"capacity"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeAppError(w, domain.ErrInvalidInput)
+		return
+	}
+	c, err := h.svc.CreateCoworking(r.Context(), domain.RoleAdmin, app.CoworkingInput{
+		Name:     req.Name,
+		Capacity: req.Capacity,
+	})
+	if err != nil {
+		writeAppError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, c)
+}
+
+func (h *Handler) adminUpdateCoworking(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		writeAppError(w, domain.ErrInvalidInput)
+		return
+	}
+	var req struct {
+		Name     string `json:"name"`
+		Capacity int    `json:"capacity"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeAppError(w, domain.ErrInvalidInput)
+		return
+	}
+	c, err := h.svc.UpdateCoworking(r.Context(), domain.RoleAdmin, id, app.CoworkingInput{
+		Name:     req.Name,
+		Capacity: req.Capacity,
+	})
+	if err != nil {
+		writeAppError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, c)
+}
+
+func (h *Handler) adminDeleteCoworking(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		writeAppError(w, domain.ErrInvalidInput)
+		return
+	}
+	if err := h.svc.DeleteCoworking(r.Context(), domain.RoleAdmin, id); err != nil {
+		writeAppError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *Handler) adminListSeats(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		writeAppError(w, domain.ErrInvalidInput)
+		return
+	}
+	seats, err := h.svc.AdminListSeats(r.Context(), domain.RoleAdmin, id)
+	if err != nil {
+		writeAppError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, seats)
+}
+
+func (h *Handler) adminLogs(w http.ResponseWriter, r *http.Request) {
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	logs, err := h.svc.Logs(r.Context(), domain.RoleAdmin, limit)
+	if err != nil {
+		writeAppError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, logs)
 }
 
 func (h *Handler) me(w http.ResponseWriter, r *http.Request) {
@@ -198,27 +328,41 @@ func (h *Handler) cancelBooking(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) createSeat(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Name   string `json:"name"`
-		Zone   string `json:"zone"`
-		Type   string `json:"type"`
-		Active bool   `json:"active"`
-	}
+	var req seatRequest
 	if err := decodeJSON(r, &req); err != nil {
 		writeAppError(w, domain.ErrInvalidInput)
 		return
 	}
-	seat, err := h.svc.CreateSeat(r.Context(), domain.RoleAdmin, app.SeatInput{
-		Name:   req.Name,
-		Zone:   req.Zone,
-		Type:   req.Type,
-		Active: req.Active,
-	})
+	seat, err := h.svc.CreateSeat(r.Context(), domain.RoleAdmin, req.toInput())
 	if err != nil {
 		writeAppError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, seat)
+}
+
+type seatRequest struct {
+	CoworkingID int64  `json:"coworking_id"`
+	Name        string `json:"name"`
+	Zone        string `json:"zone"`
+	Type        string `json:"type"`
+	Label       string `json:"label"`
+	GridX       int    `json:"grid_x"`
+	GridY       int    `json:"grid_y"`
+	Active      bool   `json:"active"`
+}
+
+func (s seatRequest) toInput() app.SeatInput {
+	return app.SeatInput{
+		CoworkingID: s.CoworkingID,
+		Name:        s.Name,
+		Zone:        s.Zone,
+		Type:        s.Type,
+		Label:       s.Label,
+		GridX:       s.GridX,
+		GridY:       s.GridY,
+		Active:      s.Active,
+	}
 }
 
 func (h *Handler) updateSeat(w http.ResponseWriter, r *http.Request) {
@@ -227,22 +371,12 @@ func (h *Handler) updateSeat(w http.ResponseWriter, r *http.Request) {
 		writeAppError(w, domain.ErrInvalidInput)
 		return
 	}
-	var req struct {
-		Name   string `json:"name"`
-		Zone   string `json:"zone"`
-		Type   string `json:"type"`
-		Active bool   `json:"active"`
-	}
+	var req seatRequest
 	if err := decodeJSON(r, &req); err != nil {
 		writeAppError(w, domain.ErrInvalidInput)
 		return
 	}
-	seat, err := h.svc.UpdateSeat(r.Context(), domain.RoleAdmin, seatID, app.SeatInput{
-		Name:   req.Name,
-		Zone:   req.Zone,
-		Type:   req.Type,
-		Active: req.Active,
-	})
+	seat, err := h.svc.UpdateSeat(r.Context(), domain.RoleAdmin, seatID, req.toInput())
 	if err != nil {
 		writeAppError(w, err)
 		return
