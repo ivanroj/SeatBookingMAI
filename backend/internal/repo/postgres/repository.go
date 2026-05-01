@@ -135,13 +135,94 @@ func (r *Repository) GetSessionByToken(ctx context.Context, token string) (*doma
 	return &session, nil
 }
 
-func (r *Repository) ListSeats(ctx context.Context) ([]domain.Seat, error) {
-	const query = `
-		SELECT id, name, zone, type, active, created_at, updated_at
-		FROM seats
-		ORDER BY id`
-
+func (r *Repository) ListCoworkings(ctx context.Context) ([]domain.Coworking, error) {
+	const query = `SELECT id, name, capacity, created_at, updated_at FROM coworkings ORDER BY id`
 	rows, err := r.db.QueryContext(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make([]domain.Coworking, 0)
+	for rows.Next() {
+		c := domain.Coworking{}
+		if err := rows.Scan(&c.ID, &c.Name, &c.Capacity, &c.CreatedAt, &c.UpdatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+func (r *Repository) GetCoworkingByID(ctx context.Context, id int64) (*domain.Coworking, error) {
+	const query = `SELECT id, name, capacity, created_at, updated_at FROM coworkings WHERE id = $1`
+	c := domain.Coworking{}
+	if err := r.db.QueryRowContext(ctx, query, id).Scan(&c.ID, &c.Name, &c.Capacity, &c.CreatedAt, &c.UpdatedAt); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, domain.ErrNotFound
+		}
+		return nil, err
+	}
+	return &c, nil
+}
+
+func (r *Repository) CreateCoworking(ctx context.Context, c *domain.Coworking) error {
+	const query = `
+		INSERT INTO coworkings (name, capacity, created_at, updated_at)
+		VALUES ($1, $2, $3, $4)
+		RETURNING id`
+	if err := r.db.QueryRowContext(ctx, query, c.Name, c.Capacity, c.CreatedAt, c.UpdatedAt).Scan(&c.ID); err != nil {
+		if isUniqueViolation(err) {
+			return domain.ErrConflictState
+		}
+		return err
+	}
+	return nil
+}
+
+func (r *Repository) UpdateCoworking(ctx context.Context, c *domain.Coworking) error {
+	const query = `
+		UPDATE coworkings
+		SET name = $1, capacity = $2, updated_at = $3
+		WHERE id = $4`
+	res, err := r.db.ExecContext(ctx, query, c.Name, c.Capacity, c.UpdatedAt, c.ID)
+	if err != nil {
+		if isUniqueViolation(err) {
+			return domain.ErrConflictState
+		}
+		return err
+	}
+	if rows, _ := res.RowsAffected(); rows == 0 {
+		return domain.ErrNotFound
+	}
+	return nil
+}
+
+func (r *Repository) DeleteCoworking(ctx context.Context, id int64) error {
+	res, err := r.db.ExecContext(ctx, `DELETE FROM coworkings WHERE id = $1`, id)
+	if err != nil {
+		return err
+	}
+	if rows, _ := res.RowsAffected(); rows == 0 {
+		return domain.ErrNotFound
+	}
+	return nil
+}
+
+func (r *Repository) ListSeats(ctx context.Context, coworkingID int64) ([]domain.Seat, error) {
+	const base = `
+		SELECT id, coworking_id, name, zone, type, COALESCE(label, ''), grid_x, grid_y, active, created_at, updated_at
+		FROM seats`
+
+	var (
+		rows *sql.Rows
+		err  error
+	)
+	if coworkingID > 0 {
+		rows, err = r.db.QueryContext(ctx, base+` WHERE coworking_id = $1 ORDER BY grid_y, grid_x, id`, coworkingID)
+	} else {
+		rows, err = r.db.QueryContext(ctx, base+` ORDER BY coworking_id, grid_y, grid_x, id`)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -150,7 +231,19 @@ func (r *Repository) ListSeats(ctx context.Context) ([]domain.Seat, error) {
 	seats := make([]domain.Seat, 0)
 	for rows.Next() {
 		seat := domain.Seat{}
-		if err := rows.Scan(&seat.ID, &seat.Name, &seat.Zone, &seat.Type, &seat.Active, &seat.CreatedAt, &seat.UpdatedAt); err != nil {
+		if err := rows.Scan(
+			&seat.ID,
+			&seat.CoworkingID,
+			&seat.Name,
+			&seat.Zone,
+			&seat.Type,
+			&seat.Label,
+			&seat.GridX,
+			&seat.GridY,
+			&seat.Active,
+			&seat.CreatedAt,
+			&seat.UpdatedAt,
+		); err != nil {
 			return nil, err
 		}
 		seats = append(seats, seat)
@@ -160,15 +253,19 @@ func (r *Repository) ListSeats(ctx context.Context) ([]domain.Seat, error) {
 
 func (r *Repository) GetSeatByID(ctx context.Context, id int64) (*domain.Seat, error) {
 	const query = `
-		SELECT id, name, zone, type, active, created_at, updated_at
+		SELECT id, coworking_id, name, zone, type, COALESCE(label, ''), grid_x, grid_y, active, created_at, updated_at
 		FROM seats
 		WHERE id = $1`
 	seat := domain.Seat{}
 	if err := r.db.QueryRowContext(ctx, query, id).Scan(
 		&seat.ID,
+		&seat.CoworkingID,
 		&seat.Name,
 		&seat.Zone,
 		&seat.Type,
+		&seat.Label,
+		&seat.GridX,
+		&seat.GridY,
 		&seat.Active,
 		&seat.CreatedAt,
 		&seat.UpdatedAt,
@@ -183,28 +280,63 @@ func (r *Repository) GetSeatByID(ctx context.Context, id int64) (*domain.Seat, e
 
 func (r *Repository) CreateSeat(ctx context.Context, seat *domain.Seat) error {
 	const query = `
-		INSERT INTO seats (name, zone, type, active, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6)
+		INSERT INTO seats (coworking_id, name, zone, type, label, grid_x, grid_y, active, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 		RETURNING id`
-	return r.db.QueryRowContext(
+	var label sql.NullString
+	if seat.Label != "" {
+		label = sql.NullString{String: seat.Label, Valid: true}
+	}
+	if err := r.db.QueryRowContext(
 		ctx,
 		query,
+		seat.CoworkingID,
 		seat.Name,
 		seat.Zone,
 		seat.Type,
+		label,
+		seat.GridX,
+		seat.GridY,
 		seat.Active,
 		seat.CreatedAt,
 		seat.UpdatedAt,
-	).Scan(&seat.ID)
+	).Scan(&seat.ID); err != nil {
+		if isUniqueViolation(err) {
+			return domain.ErrConflictState
+		}
+		return err
+	}
+	return nil
 }
 
 func (r *Repository) UpdateSeat(ctx context.Context, seat *domain.Seat) error {
 	const query = `
 		UPDATE seats
-		SET name = $1, zone = $2, type = $3, active = $4, updated_at = $5
-		WHERE id = $6`
-	result, err := r.db.ExecContext(ctx, query, seat.Name, seat.Zone, seat.Type, seat.Active, seat.UpdatedAt, seat.ID)
+		SET coworking_id = $1, name = $2, zone = $3, type = $4, label = $5,
+		    grid_x = $6, grid_y = $7, active = $8, updated_at = $9
+		WHERE id = $10`
+	var label sql.NullString
+	if seat.Label != "" {
+		label = sql.NullString{String: seat.Label, Valid: true}
+	}
+	result, err := r.db.ExecContext(
+		ctx,
+		query,
+		seat.CoworkingID,
+		seat.Name,
+		seat.Zone,
+		seat.Type,
+		label,
+		seat.GridX,
+		seat.GridY,
+		seat.Active,
+		seat.UpdatedAt,
+		seat.ID,
+	)
 	if err != nil {
+		if isUniqueViolation(err) {
+			return domain.ErrConflictState
+		}
 		return err
 	}
 	if rows, _ := result.RowsAffected(); rows == 0 {

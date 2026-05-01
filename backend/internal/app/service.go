@@ -31,6 +31,7 @@ type Service struct {
 	repo           Repository
 	now            func() time.Time
 	cancelLeadTime time.Duration
+	logs           *logRing
 }
 
 func NewService(repo Repository, opts ...Option) *Service {
@@ -38,6 +39,7 @@ func NewService(repo Repository, opts ...Option) *Service {
 		repo:           repo,
 		now:            time.Now,
 		cancelLeadTime: time.Hour,
+		logs:           newLogRing(200),
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -57,10 +59,19 @@ type LoginInput struct {
 }
 
 type SeatInput struct {
-	Name   string
-	Zone   string
-	Type   string
-	Active bool
+	CoworkingID int64
+	Name        string
+	Zone        string
+	Type        string
+	Label       string
+	GridX       int
+	GridY       int
+	Active      bool
+}
+
+type CoworkingInput struct {
+	Name     string
+	Capacity int
 }
 
 type CreateBookingInput struct {
@@ -147,6 +158,7 @@ func (s *Service) Login(ctx context.Context, in LoginInput) (string, error) {
 		return "", err
 	}
 
+	s.logEvent("auth.login", map[string]any{"user_id": user.ID, "email": user.Email, "role": string(user.Role)})
 	return token, nil
 }
 
@@ -174,11 +186,11 @@ func (s *Service) Authenticate(ctx context.Context, token string) (*domain.User,
 	return user, nil
 }
 
-func (s *Service) ListAvailableSeats(ctx context.Context, startAt, endAt time.Time) ([]domain.Seat, error) {
+func (s *Service) ListAvailableSeats(ctx context.Context, coworkingID int64, startAt, endAt time.Time) ([]domain.Seat, error) {
 	if err := validateInterval(startAt, endAt); err != nil {
 		return nil, err
 	}
-	seats, err := s.repo.ListSeats(ctx)
+	seats, err := s.repo.ListSeats(ctx, coworkingID)
 	if err != nil {
 		return nil, err
 	}
@@ -196,6 +208,61 @@ func (s *Service) ListAvailableSeats(ctx context.Context, startAt, endAt time.Ti
 		}
 	}
 	return available, nil
+}
+
+// SeatWithStatus is a seat enriched with availability for a given window.
+// Used by the student map view: free seats can be clicked, busy ones cannot.
+type SeatWithStatus struct {
+	domain.Seat
+	IsBusy bool `json:"is_busy"`
+}
+
+func (s *Service) ListSeatsForMap(ctx context.Context, coworkingID int64, startAt, endAt time.Time) ([]SeatWithStatus, error) {
+	if coworkingID <= 0 {
+		return nil, domain.ErrInvalidInput
+	}
+	if err := validateInterval(startAt, endAt); err != nil {
+		return nil, err
+	}
+	if _, err := s.repo.GetCoworkingByID(ctx, coworkingID); err != nil {
+		return nil, err
+	}
+	seats, err := s.repo.ListSeats(ctx, coworkingID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]SeatWithStatus, 0, len(seats))
+	for _, seat := range seats {
+		busy := false
+		if seat.Active {
+			conflict, err := s.repo.SeatHasConflict(ctx, seat.ID, startAt.UTC(), endAt.UTC())
+			if err != nil {
+				return nil, err
+			}
+			busy = conflict
+		} else {
+			busy = true
+		}
+		out = append(out, SeatWithStatus{Seat: seat, IsBusy: busy})
+	}
+	return out, nil
+}
+
+func (s *Service) ListCoworkings(ctx context.Context) ([]domain.Coworking, error) {
+	return s.repo.ListCoworkings(ctx)
+}
+
+func (s *Service) AdminListSeats(ctx context.Context, actorRole domain.Role, coworkingID int64) ([]domain.Seat, error) {
+	if err := ensureAdmin(actorRole); err != nil {
+		return nil, err
+	}
+	if coworkingID <= 0 {
+		return nil, domain.ErrInvalidInput
+	}
+	if _, err := s.repo.GetCoworkingByID(ctx, coworkingID); err != nil {
+		return nil, err
+	}
+	return s.repo.ListSeats(ctx, coworkingID)
 }
 
 func (s *Service) CreateBooking(ctx context.Context, userID int64, in CreateBookingInput) (*domain.Booking, error) {
@@ -269,6 +336,7 @@ func (s *Service) CreateBooking(ctx context.Context, userID int64, in CreateBook
 			_ = s.repo.UpdateUserName(ctx, userID, displayName)
 		}
 	}
+	s.logEvent("booking.created", map[string]any{"id": booking.ID, "seat_id": booking.SeatID, "display_name": displayName})
 	return booking, nil
 }
 
@@ -301,6 +369,7 @@ func (s *Service) LoginAsDevice(ctx context.Context, deviceID string) (string, e
 			return "", err
 		}
 		user = newUser
+		s.logEvent("auth.device_registered", map[string]any{"user_id": user.ID})
 	}
 
 	token, err := randomToken(32)
@@ -337,7 +406,11 @@ func (s *Service) CancelBooking(ctx context.Context, userID, bookingID int64) er
 	if booking.StartAt.Sub(s.now().UTC()) < s.cancelLeadTime {
 		return domain.ErrBookingNotCancelable
 	}
-	return s.repo.UpdateBookingStatus(ctx, bookingID, domain.BookingStatusCanceled, s.now().UTC())
+	if err := s.repo.UpdateBookingStatus(ctx, bookingID, domain.BookingStatusCanceled, s.now().UTC()); err != nil {
+		return err
+	}
+	s.logEvent("booking.canceled", map[string]any{"id": bookingID, "by": "user"})
+	return nil
 }
 
 func (s *Service) ListUserBookings(ctx context.Context, userID int64) ([]domain.Booking, error) {
@@ -354,22 +427,34 @@ func (s *Service) CreateSeat(ctx context.Context, actorRole domain.Role, in Seat
 	name := strings.TrimSpace(in.Name)
 	zone := strings.TrimSpace(in.Zone)
 	seatType := strings.TrimSpace(in.Type)
-	if name == "" || zone == "" || seatType == "" {
+	label := strings.TrimSpace(in.Label)
+	if name == "" || zone == "" || seatType == "" || in.CoworkingID <= 0 {
 		return nil, domain.ErrInvalidInput
+	}
+	if in.GridX < 0 || in.GridY < 0 || in.GridX > 50 || in.GridY > 50 {
+		return nil, domain.ErrInvalidInput
+	}
+	if _, err := s.repo.GetCoworkingByID(ctx, in.CoworkingID); err != nil {
+		return nil, err
 	}
 
 	now := s.now().UTC()
 	seat := &domain.Seat{
-		Name:      name,
-		Zone:      zone,
-		Type:      seatType,
-		Active:    in.Active,
-		CreatedAt: now,
-		UpdatedAt: now,
+		CoworkingID: in.CoworkingID,
+		Name:        name,
+		Zone:        zone,
+		Type:        seatType,
+		Label:       label,
+		GridX:       in.GridX,
+		GridY:       in.GridY,
+		Active:      in.Active,
+		CreatedAt:   now,
+		UpdatedAt:   now,
 	}
 	if err := s.repo.CreateSeat(ctx, seat); err != nil {
 		return nil, err
 	}
+	s.logEvent("seat.created", map[string]any{"id": seat.ID, "coworking_id": seat.CoworkingID, "name": seat.Name, "x": seat.GridX, "y": seat.GridY})
 	return seat, nil
 }
 
@@ -388,19 +473,27 @@ func (s *Service) UpdateSeat(ctx context.Context, actorRole domain.Role, seatID 
 	name := strings.TrimSpace(in.Name)
 	zone := strings.TrimSpace(in.Zone)
 	seatType := strings.TrimSpace(in.Type)
+	label := strings.TrimSpace(in.Label)
 	if name == "" || zone == "" || seatType == "" {
+		return nil, domain.ErrInvalidInput
+	}
+	if in.GridX < 0 || in.GridY < 0 || in.GridX > 50 || in.GridY > 50 {
 		return nil, domain.ErrInvalidInput
 	}
 
 	seat.Name = name
 	seat.Zone = zone
 	seat.Type = seatType
+	seat.Label = label
+	seat.GridX = in.GridX
+	seat.GridY = in.GridY
 	seat.Active = in.Active
 	seat.UpdatedAt = s.now().UTC()
 
 	if err := s.repo.UpdateSeat(ctx, seat); err != nil {
 		return nil, err
 	}
+	s.logEvent("seat.updated", map[string]any{"id": seat.ID, "name": seat.Name, "active": seat.Active})
 	return seat, nil
 }
 
@@ -418,7 +511,97 @@ func (s *Service) DeleteSeat(ctx context.Context, actorRole domain.Role, seatID 
 	if hasFuture {
 		return domain.ErrConflictState
 	}
-	return s.repo.DeleteSeat(ctx, seatID)
+	if err := s.repo.DeleteSeat(ctx, seatID); err != nil {
+		return err
+	}
+	s.logEvent("seat.deleted", map[string]any{"id": seatID})
+	return nil
+}
+
+func (s *Service) CreateCoworking(ctx context.Context, actorRole domain.Role, in CoworkingInput) (*domain.Coworking, error) {
+	if err := ensureAdmin(actorRole); err != nil {
+		return nil, err
+	}
+	name := strings.TrimSpace(in.Name)
+	if name == "" || in.Capacity <= 0 || in.Capacity > 1000 {
+		return nil, domain.ErrInvalidInput
+	}
+	now := s.now().UTC()
+	c := &domain.Coworking{
+		Name:      name,
+		Capacity:  in.Capacity,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	if err := s.repo.CreateCoworking(ctx, c); err != nil {
+		return nil, err
+	}
+	s.logEvent("coworking.created", map[string]any{"id": c.ID, "name": c.Name, "capacity": c.Capacity})
+	return c, nil
+}
+
+func (s *Service) UpdateCoworking(ctx context.Context, actorRole domain.Role, id int64, in CoworkingInput) (*domain.Coworking, error) {
+	if err := ensureAdmin(actorRole); err != nil {
+		return nil, err
+	}
+	if id <= 0 {
+		return nil, domain.ErrInvalidInput
+	}
+	name := strings.TrimSpace(in.Name)
+	if name == "" || in.Capacity <= 0 || in.Capacity > 1000 {
+		return nil, domain.ErrInvalidInput
+	}
+	c, err := s.repo.GetCoworkingByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	c.Name = name
+	c.Capacity = in.Capacity
+	c.UpdatedAt = s.now().UTC()
+	if err := s.repo.UpdateCoworking(ctx, c); err != nil {
+		return nil, err
+	}
+	s.logEvent("coworking.updated", map[string]any{"id": c.ID, "name": c.Name, "capacity": c.Capacity})
+	return c, nil
+}
+
+func (s *Service) DeleteCoworking(ctx context.Context, actorRole domain.Role, id int64) error {
+	if err := ensureAdmin(actorRole); err != nil {
+		return err
+	}
+	if id <= 0 {
+		return domain.ErrInvalidInput
+	}
+	if err := s.repo.DeleteCoworking(ctx, id); err != nil {
+		return err
+	}
+	s.logEvent("coworking.deleted", map[string]any{"id": id})
+	return nil
+}
+
+func (s *Service) Logs(ctx context.Context, actorRole domain.Role, limit int) ([]LogEntry, error) {
+	if err := ensureAdmin(actorRole); err != nil {
+		return nil, err
+	}
+	if limit <= 0 || limit > 200 {
+		limit = 200
+	}
+	return s.logs.Snapshot(limit), nil
+}
+
+func (s *Service) LogEvent(event string, fields map[string]any) {
+	s.logEvent(event, fields)
+}
+
+func (s *Service) logEvent(event string, fields map[string]any) {
+	if s.logs == nil {
+		return
+	}
+	s.logs.Push(LogEntry{
+		At:     s.now().UTC(),
+		Event:  event,
+		Fields: fields,
+	})
 }
 
 func (s *Service) AdminUpdateBookingStatus(ctx context.Context, actorRole domain.Role, bookingID int64, status domain.BookingStatus) error {
@@ -440,7 +623,11 @@ func (s *Service) AdminUpdateBookingStatus(ctx context.Context, actorRole domain
 		return domain.ErrConflictState
 	}
 
-	return s.repo.UpdateBookingStatus(ctx, bookingID, status, s.now().UTC())
+	if err := s.repo.UpdateBookingStatus(ctx, bookingID, status, s.now().UTC()); err != nil {
+		return err
+	}
+	s.logEvent("booking.admin_status", map[string]any{"id": bookingID, "status": string(status)})
+	return nil
 }
 
 func (s *Service) AdminListBookings(ctx context.Context, actorRole domain.Role) ([]domain.Booking, error) {
@@ -457,7 +644,11 @@ func (s *Service) UpdateBookingLimit(ctx context.Context, actorRole domain.Role,
 	if limit <= 0 || limit > 100 {
 		return domain.ErrInvalidInput
 	}
-	return s.repo.SetBookingLimit(ctx, limit)
+	if err := s.repo.SetBookingLimit(ctx, limit); err != nil {
+		return err
+	}
+	s.logEvent("settings.booking_limit", map[string]any{"limit": limit})
+	return nil
 }
 
 func (s *Service) BuildReport(ctx context.Context, actorRole domain.Role, from, to time.Time) (*Report, error) {

@@ -3,17 +3,19 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Бронирование мест в коворкинге</title>
+  <title>Бронирование коворкинга</title>
   <link rel="stylesheet" href="styles.css">
-  <script src="https://telegram.org/js/telegram-web-app.js"></script>
 </head>
 <body>
   <main class="layout">
     <header class="topbar">
-      <h1 id="screenTitle">Бронирование мест</h1>
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">⌂</span>
+        <h1 id="screenTitle">Коворкинг</h1>
+      </div>
       <div class="topbar-actions">
-        <span id="statusBadge" class="badge">Не выбрана роль</span>
-        <button id="backHomeBtn" class="secondary" hidden>← Сменить роль</button>
+        <span id="statusBadge" class="badge" hidden></span>
+        <button id="backHomeBtn" class="ghost" hidden>← Сменить роль</button>
       </div>
     </header>
 
@@ -22,52 +24,66 @@
     <!-- =========================== -->
     <section class="panel landing" id="landingPanel">
       <h2>Кто вы?</h2>
-      <p class="hint">Выберите, как вы хотите работать с системой бронирования.</p>
+      <p class="hint">Выберите, как вы хотите работать с системой.</p>
       <div class="role-cards">
         <button id="chooseStudentBtn" class="role-card role-student" type="button">
           <span class="role-card-emoji" aria-hidden="true">🎓</span>
           <span class="role-card-title">Я студент / сотрудник</span>
-          <span class="role-card-sub">Без логина: введите имя и забронируйте место.</span>
+          <span class="role-card-sub">Без логина — выберите коворкинг и место на схеме.</span>
         </button>
         <button id="chooseAdminBtn" class="role-card role-admin" type="button">
           <span class="role-card-emoji" aria-hidden="true">🛠</span>
           <span class="role-card-title">Я администратор</span>
-          <span class="role-card-sub">Вход по логину: управление местами, бронями и отчётами.</span>
+          <span class="role-card-sub">Управление коворкингами, местами, бронированиями.</span>
         </button>
       </div>
     </section>
 
     <!-- =========================== -->
-    <!-- Студенческий экран           -->
+    <!-- Студент: список коворкингов  -->
     <!-- =========================== -->
-    <section class="panel" id="studentBookingPanel" hidden>
-      <h2>Забронировать место</h2>
-      <p class="hint">Введите своё имя, выберите интервал — система покажет свободные места.</p>
-      <div class="grid">
-        <label>Имя<input id="studentName" type="text" placeholder="Иван Иванов" autocomplete="name"></label>
-        <label>Начало<input id="studentStartAt" type="datetime-local"></label>
-        <label>Конец<input id="studentEndAt" type="datetime-local"></label>
+    <section class="panel" id="studentCoworkingsPanel" hidden>
+      <h2>Выберите коворкинг</h2>
+      <p class="hint">Это первый шаг. Дальше вы выберете место на схеме.</p>
+      <div class="coworking-cards" id="studentCoworkingList">
+        <p class="hint">Загрузка…</p>
       </div>
-      <div class="actions">
-        <button id="studentLoadSeatsBtn">Показать свободные места</button>
-        <button id="studentRefreshBtn" class="secondary">Обновить мои брони</button>
+    </section>
+
+    <!-- =========================== -->
+    <!-- Студент: схема мест          -->
+    <!-- =========================== -->
+    <section class="panel" id="studentMapPanel" hidden>
+      <div class="panel-head">
+        <button id="studentBackToCoworkingsBtn" class="ghost">← К коворкингам</button>
+        <h2 id="studentMapTitle">Схема</h2>
       </div>
-      <div class="tables">
-        <div>
-          <h3>Свободные места</h3>
-          <table>
-            <thead><tr><th>ID</th><th>Название</th><th>Зона</th><th>Тип</th><th></th></tr></thead>
-            <tbody id="studentSeatsTable"><tr><td colspan="5" class="hint">Нажмите «Показать свободные места».</td></tr></tbody>
-          </table>
-        </div>
-        <div>
-          <h3>Мои брони (на этом устройстве)</h3>
-          <table>
-            <thead><tr><th>ID</th><th>Место</th><th>Имя</th><th>Начало</th><th>Конец</th><th>Статус</th><th></th></tr></thead>
-            <tbody id="studentBookingsTable"><tr><td colspan="7" class="hint">Пока нет броней.</td></tr></tbody>
-          </table>
-        </div>
+
+      <div class="window-form">
+        <label>Имя
+          <input id="studentName" type="text" placeholder="Иван Иванов" autocomplete="name">
+        </label>
+        <label>Начало
+          <input id="studentStartAt" type="datetime-local">
+        </label>
+        <label>Конец
+          <input id="studentEndAt" type="datetime-local">
+        </label>
+        <button id="studentReloadMapBtn" class="ghost">Обновить</button>
       </div>
+
+      <div class="legend" aria-hidden="true">
+        <span class="legend-item"><i class="seat-chip seat-free"></i>свободно</span>
+        <span class="legend-item"><i class="seat-chip seat-busy"></i>занято</span>
+        <span class="legend-item"><i class="seat-chip seat-inactive"></i>не используется</span>
+      </div>
+
+      <div class="map" id="studentMap"></div>
+
+      <h3>Мои бронирования на этом устройстве</h3>
+      <ul class="booking-list" id="studentBookingsList">
+        <li class="hint">Бронирований пока нет.</li>
+      </ul>
     </section>
 
     <!-- =========================== -->
@@ -88,60 +104,163 @@
     <!-- =========================== -->
     <!-- Админ: панель                -->
     <!-- =========================== -->
-    <section class="panel" id="adminPanel" hidden>
-      <h2>Управление местами (UC-5)</h2>
-      <div class="grid">
-        <label>ID места (для обновления / удаления)<input id="seatId" type="number" min="1" placeholder="1"></label>
-        <label>Название<input id="seatName" type="text" placeholder="C-01"></label>
-        <label>Зона<input id="seatZone" type="text" placeholder="C"></label>
-        <label>Тип<input id="seatType" type="text" placeholder="desk"></label>
-      </div>
-      <div class="actions">
-        <button id="createSeatBtn">Создать место</button>
-        <button id="updateSeatBtn" class="secondary">Обновить место</button>
-        <button id="deleteSeatBtn" class="danger">Удалить место</button>
+    <section class="panel admin" id="adminPanel" hidden>
+      <nav class="tabs" role="tablist">
+        <button class="tab is-active" data-tab="coworkings" role="tab">Коворкинги</button>
+        <button class="tab" data-tab="bookings" role="tab">Брони</button>
+        <button class="tab" data-tab="settings" role="tab">Настройки</button>
+        <button class="tab" data-tab="report" role="tab">Отчёт</button>
+        <button class="tab" data-tab="logs" role="tab">Журнал</button>
+      </nav>
+
+      <div class="tab-panel" data-tab="coworkings">
+        <div class="panel-head">
+          <h2>Коворкинги</h2>
+          <button id="adminNewCoworkingBtn">+ Новый коворкинг</button>
+        </div>
+        <div class="coworking-cards" id="adminCoworkingList">
+          <p class="hint">Загрузка…</p>
+        </div>
+
+        <section id="adminGridSection" hidden>
+          <div class="panel-head">
+            <h3 id="adminGridTitle">Схема</h3>
+            <div class="actions">
+              <button id="adminEditCoworkingBtn" class="ghost">Изменить коворкинг</button>
+              <button id="adminDeleteCoworkingBtn" class="danger">Удалить коворкинг</button>
+            </div>
+          </div>
+          <p class="hint">Кликните по пустой клетке, чтобы создать место. Кликните по существующему — редактировать.</p>
+          <div class="map editable" id="adminMap"></div>
+        </section>
       </div>
 
-      <h2>Все бронирования (UC-6)</h2>
-      <div class="actions">
-        <button id="loadAllBookingsBtn">Загрузить все брони</button>
-      </div>
-      <div class="tables">
-        <div>
+      <div class="tab-panel" data-tab="bookings" hidden>
+        <div class="panel-head">
+          <h2>Все бронирования</h2>
+          <button id="loadAllBookingsBtn" class="ghost">Обновить</button>
+        </div>
+        <div class="table-wrap">
           <table>
-            <thead><tr><th>ID</th><th>Студент</th><th>Место</th><th>Начало</th><th>Конец</th><th>Статус</th><th></th></tr></thead>
-            <tbody id="allBookingsTable"><tr><td colspan="7" class="hint">Нажмите «Загрузить все брони».</td></tr></tbody>
+            <thead><tr><th>Студент</th><th>Место</th><th>Начало</th><th>Конец</th><th>Статус</th><th></th></tr></thead>
+            <tbody id="allBookingsTable"><tr><td colspan="6" class="hint">Нажмите «Обновить».</td></tr></tbody>
           </table>
         </div>
       </div>
 
-      <h2>Лимит активных броней (UC-7)</h2>
-      <div class="grid compact">
-        <label>Лимит<input id="bookingLimit" type="number" min="1" max="100" value="3"></label>
-      </div>
-      <div class="actions">
-        <button id="updateLimitBtn">Обновить лимит</button>
+      <div class="tab-panel" data-tab="settings" hidden>
+        <h2>Лимит активных броней на пользователя</h2>
+        <div class="grid compact">
+          <label>Лимит<input id="bookingLimit" type="number" min="1" max="100" value="3"></label>
+        </div>
+        <div class="actions">
+          <button id="updateLimitBtn">Сохранить</button>
+        </div>
       </div>
 
-      <h2>Отчёт (UC-8)</h2>
-      <div class="grid">
-        <label>С<input id="reportFrom" type="datetime-local"></label>
-        <label>По<input id="reportTo" type="datetime-local"></label>
+      <div class="tab-panel" data-tab="report" hidden>
+        <h2>Отчёт по бронированиям</h2>
+        <div class="grid">
+          <label>С<input id="reportFrom" type="datetime-local"></label>
+          <label>По<input id="reportTo" type="datetime-local"></label>
+        </div>
+        <div class="actions">
+          <button id="runReportBtn">Сформировать</button>
+        </div>
+        <div class="kpis" id="reportKpis" hidden>
+          <div class="kpi"><span class="kpi-label">Всего</span><span class="kpi-value" id="kpiTotal">—</span></div>
+          <div class="kpi"><span class="kpi-label">Отменено</span><span class="kpi-value" id="kpiCanceled">—</span></div>
+          <div class="kpi"><span class="kpi-label">Окно</span><span class="kpi-value" id="kpiWindow">—</span></div>
+        </div>
+        <div class="table-wrap" id="reportSeatsWrap" hidden>
+          <table>
+            <thead><tr><th>Место</th><th>Бронирований</th></tr></thead>
+            <tbody id="reportSeatsTable"></tbody>
+          </table>
+        </div>
       </div>
-      <div class="actions">
-        <button id="runReportBtn">Сформировать отчёт</button>
-      </div>
-      <div>
-        <h3>Результат</h3>
-        <pre id="reportResult">{}</pre>
-      </div>
-    </section>
 
-    <section class="panel log">
-      <h2>Лог</h2>
-      <pre id="logOutput"></pre>
+      <div class="tab-panel" data-tab="logs" hidden>
+        <div class="panel-head">
+          <h2>Журнал событий</h2>
+          <button id="reloadLogsBtn" class="ghost">Обновить</button>
+        </div>
+        <ul class="log-list" id="logList"><li class="hint">Загрузка…</li></ul>
+      </div>
     </section>
   </main>
+
+  <!-- =========================== -->
+  <!-- Modal: бронирование (студент) -->
+  <!-- =========================== -->
+  <dialog id="bookingDialog" class="dialog">
+    <form method="dialog" class="dialog-body">
+      <h3>Забронировать место</h3>
+      <p class="hint" id="bookingDialogSeat">—</p>
+      <p class="hint" id="bookingDialogWindow">—</p>
+      <div class="dialog-actions">
+        <button value="cancel" class="ghost">Отмена</button>
+        <button value="confirm" id="bookingDialogConfirm">Забронировать</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- =========================== -->
+  <!-- Modal: новое/редактирование место (админ) -->
+  <!-- =========================== -->
+  <dialog id="seatDialog" class="dialog">
+    <form method="dialog" class="dialog-body">
+      <h3 id="seatDialogTitle">Место</h3>
+      <p class="hint" id="seatDialogPos">—</p>
+      <label>Номер
+        <input id="seatDialogName" type="text" placeholder="A-01" required>
+      </label>
+      <label>Зона
+        <input id="seatDialogZone" type="text" placeholder="A">
+      </label>
+      <label>Тип
+        <select id="seatDialogType">
+          <option value="desk">Стандартное</option>
+          <option value="pc">С ПК</option>
+          <option value="meeting">Переговорная</option>
+          <option value="quiet">Тихая зона</option>
+        </select>
+      </label>
+      <label class="checkbox">
+        <input id="seatDialogActive" type="checkbox" checked> Активно
+      </label>
+      <div class="dialog-actions">
+        <button value="cancel" class="ghost">Отмена</button>
+        <button id="seatDialogDelete" class="danger" hidden>Удалить</button>
+        <button value="confirm" id="seatDialogSave">Сохранить</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- =========================== -->
+  <!-- Modal: коворкинг (создать/редактировать) -->
+  <!-- =========================== -->
+  <dialog id="coworkingDialog" class="dialog">
+    <form method="dialog" class="dialog-body">
+      <h3 id="coworkingDialogTitle">Коворкинг</h3>
+      <label>Название
+        <input id="coworkingDialogName" type="text" placeholder="Главный коворкинг" required>
+      </label>
+      <label>Кол-во мест
+        <input id="coworkingDialogCapacity" type="number" min="1" max="1000" value="20" required>
+      </label>
+      <p class="hint">Количество мест — справочное значение. Сами места создаются на схеме после сохранения.</p>
+      <div class="dialog-actions">
+        <button value="cancel" class="ghost">Отмена</button>
+        <button value="confirm" id="coworkingDialogSave">Сохранить</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- =========================== -->
+  <!-- Toast (ошибки/уведомления)    -->
+  <!-- =========================== -->
+  <div class="toast-stack" id="toastStack" aria-live="polite"></div>
 
   <script src="app.js"></script>
 </body>

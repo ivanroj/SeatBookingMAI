@@ -341,7 +341,7 @@ func TestListAvailableSeatsExcludesInactiveAndConflicted(t *testing.T) {
 		Status:  domain.BookingStatusConfirmed,
 	})
 
-	seats, err := svc.ListAvailableSeats(context.Background(), windowStart, windowEnd)
+	seats, err := svc.ListAvailableSeats(context.Background(), 0, windowStart, windowEnd)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -357,20 +357,20 @@ func TestCreateUpdateDeleteSeatLifecycleForAdmin(t *testing.T) {
 	svc := NewService(repo, WithClock(func() time.Time { return now }))
 
 	if _, err := svc.CreateSeat(context.Background(), domain.RoleUser, SeatInput{
-		Name: "X1", Zone: "X", Type: "desk", Active: true,
+		CoworkingID: 1, Name: "X1", Zone: "X", Type: "desk", Active: true,
 	}); !errors.Is(err, domain.ErrForbidden) {
 		t.Fatalf("expected ErrForbidden, got %v", err)
 	}
 
 	seat, err := svc.CreateSeat(context.Background(), domain.RoleAdmin, SeatInput{
-		Name: "X1", Zone: "X", Type: "desk", Active: true,
+		CoworkingID: 1, Name: "X1", Zone: "X", Type: "desk", GridX: 0, GridY: 0, Active: true,
 	})
 	if err != nil {
 		t.Fatalf("create seat failed: %v", err)
 	}
 
 	updated, err := svc.UpdateSeat(context.Background(), domain.RoleAdmin, seat.ID, SeatInput{
-		Name: "X1-upd", Zone: "Y", Type: "focus", Active: true,
+		CoworkingID: 1, Name: "X1-upd", Zone: "Y", Type: "focus", GridX: 0, GridY: 0, Active: true,
 	})
 	if err != nil {
 		t.Fatalf("update seat failed: %v", err)
@@ -461,29 +461,36 @@ func TestAdminListBookingsRoleGuard(t *testing.T) {
 }
 
 type fakeRepo struct {
-	users         map[int64]domain.User
-	usersByEmail  map[string]int64
-	sessions      map[string]domain.Session
-	seats         map[int64]domain.Seat
-	bookings      map[int64]domain.Booking
-	settings      domain.Settings
-	nextUserID    int64
-	nextSeatID    int64
-	nextBookingID int64
+	users           map[int64]domain.User
+	usersByEmail    map[string]int64
+	sessions        map[string]domain.Session
+	coworkings      map[int64]domain.Coworking
+	seats           map[int64]domain.Seat
+	bookings        map[int64]domain.Booking
+	settings        domain.Settings
+	nextUserID      int64
+	nextCoworkingID int64
+	nextSeatID      int64
+	nextBookingID   int64
 }
 
 func newFakeRepo() *fakeRepo {
-	return &fakeRepo{
-		users:         map[int64]domain.User{},
-		usersByEmail:  map[string]int64{},
-		sessions:      map[string]domain.Session{},
-		seats:         map[int64]domain.Seat{},
-		bookings:      map[int64]domain.Booking{},
-		settings:      domain.Settings{BookingLimit: 3},
-		nextUserID:    1,
-		nextSeatID:    1,
-		nextBookingID: 1,
+	r := &fakeRepo{
+		users:           map[int64]domain.User{},
+		usersByEmail:    map[string]int64{},
+		sessions:        map[string]domain.Session{},
+		coworkings:      map[int64]domain.Coworking{},
+		seats:           map[int64]domain.Seat{},
+		bookings:        map[int64]domain.Booking{},
+		settings:        domain.Settings{BookingLimit: 3},
+		nextUserID:      1,
+		nextCoworkingID: 1,
+		nextSeatID:      1,
+		nextBookingID:   1,
 	}
+	defaultCw := domain.Coworking{Name: "Default", Capacity: 100}
+	_ = r.CreateCoworking(context.Background(), &defaultCw)
+	return r
 }
 
 func (r *fakeRepo) mustCreateUser(email string, role domain.Role) domain.User {
@@ -499,13 +506,17 @@ func (r *fakeRepo) mustCreateUser(email string, role domain.Role) domain.User {
 }
 
 func (r *fakeRepo) mustCreateSeat(name string) domain.Seat {
+	x := r.nextSeatID - 1
 	seat := domain.Seat{
-		Name:      name,
-		Zone:      "A",
-		Type:      "desk",
-		Active:    true,
-		CreatedAt: time.Now().UTC(),
-		UpdatedAt: time.Now().UTC(),
+		CoworkingID: 1,
+		Name:        name,
+		Zone:        "A",
+		Type:        "desk",
+		GridX:       int(x % 8),
+		GridY:       int(x / 8),
+		Active:      true,
+		CreatedAt:   time.Now().UTC(),
+		UpdatedAt:   time.Now().UTC(),
 	}
 	_ = r.CreateSeat(context.Background(), &seat)
 	return seat
@@ -573,9 +584,52 @@ func (r *fakeRepo) GetSessionByToken(_ context.Context, token string) (*domain.S
 	return &session, nil
 }
 
-func (r *fakeRepo) ListSeats(_ context.Context) ([]domain.Seat, error) {
+func (r *fakeRepo) ListCoworkings(_ context.Context) ([]domain.Coworking, error) {
+	out := make([]domain.Coworking, 0, len(r.coworkings))
+	for _, c := range r.coworkings {
+		out = append(out, c)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out, nil
+}
+
+func (r *fakeRepo) GetCoworkingByID(_ context.Context, id int64) (*domain.Coworking, error) {
+	c, ok := r.coworkings[id]
+	if !ok {
+		return nil, domain.ErrNotFound
+	}
+	return &c, nil
+}
+
+func (r *fakeRepo) CreateCoworking(_ context.Context, c *domain.Coworking) error {
+	c.ID = r.nextCoworkingID
+	r.nextCoworkingID++
+	r.coworkings[c.ID] = *c
+	return nil
+}
+
+func (r *fakeRepo) UpdateCoworking(_ context.Context, c *domain.Coworking) error {
+	if _, ok := r.coworkings[c.ID]; !ok {
+		return domain.ErrNotFound
+	}
+	r.coworkings[c.ID] = *c
+	return nil
+}
+
+func (r *fakeRepo) DeleteCoworking(_ context.Context, id int64) error {
+	if _, ok := r.coworkings[id]; !ok {
+		return domain.ErrNotFound
+	}
+	delete(r.coworkings, id)
+	return nil
+}
+
+func (r *fakeRepo) ListSeats(_ context.Context, coworkingID int64) ([]domain.Seat, error) {
 	out := make([]domain.Seat, 0, len(r.seats))
 	for _, seat := range r.seats {
+		if coworkingID > 0 && seat.CoworkingID != coworkingID {
+			continue
+		}
 		out = append(out, seat)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })

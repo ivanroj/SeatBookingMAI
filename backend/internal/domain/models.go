@@ -34,14 +34,26 @@ type Session struct {
 	CreatedAt time.Time
 }
 
-type Seat struct {
+type Coworking struct {
 	ID        int64     `json:"id"`
 	Name      string    `json:"name"`
-	Zone      string    `json:"zone"`
-	Type      string    `json:"type"`
-	Active    bool      `json:"active"`
+	Capacity  int       `json:"capacity"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
+}
+
+type Seat struct {
+	ID          int64     `json:"id"`
+	CoworkingID int64     `json:"coworking_id"`
+	Name        string    `json:"name"`
+	Zone        string    `json:"zone"`
+	Type        string    `json:"type"`
+	Label       string    `json:"label,omitempty"`
+	GridX       int       `json:"grid_x"`
+	GridY       int       `json:"grid_y"`
+	Active      bool      `json:"active"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
 }
 
 type Booking struct {

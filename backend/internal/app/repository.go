@@ -17,7 +17,13 @@ type Repository interface {
 	CreateSession(ctx context.Context, session *domain.Session) error
 	GetSessionByToken(ctx context.Context, token string) (*domain.Session, error)
 
-	ListSeats(ctx context.Context) ([]domain.Seat, error)
+	ListCoworkings(ctx context.Context) ([]domain.Coworking, error)
+	GetCoworkingByID(ctx context.Context, id int64) (*domain.Coworking, error)
+	CreateCoworking(ctx context.Context, c *domain.Coworking) error
+	UpdateCoworking(ctx context.Context, c *domain.Coworking) error
+	DeleteCoworking(ctx context.Context, id int64) error
+
+	ListSeats(ctx context.Context, coworkingID int64) ([]domain.Seat, error)
 	GetSeatByID(ctx context.Context, id int64) (*domain.Seat, error)
 	CreateSeat(ctx context.Context, seat *domain.Seat) error
 	UpdateSeat(ctx context.Context, seat *domain.Seat) error
