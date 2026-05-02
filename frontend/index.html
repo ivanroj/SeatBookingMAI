@@ -130,7 +130,7 @@
               <button id="adminDeleteCoworkingBtn" class="danger">Удалить коворкинг</button>
             </div>
           </div>
-          <p class="hint">Кликните по пустой клетке, чтобы создать место. Кликните по существующему — редактировать.</p>
+          <p class="hint" id="adminGridHint">Кликните по пустой клетке, чтобы создать место. Кликните по существующему — редактировать.</p>
           <div class="map editable" id="adminMap"></div>
         </section>
       </div>
@@ -253,6 +253,20 @@
       <div class="dialog-actions">
         <button value="cancel" class="ghost">Отмена</button>
         <button value="confirm" id="coworkingDialogSave">Сохранить</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- =========================== -->
+  <!-- Modal: подтверждение действия (универсальный) -->
+  <!-- =========================== -->
+  <dialog id="confirmDialog" class="dialog">
+    <form method="dialog" class="dialog-body">
+      <h3 id="confirmDialogTitle">Подтверждение</h3>
+      <p id="confirmDialogBody">—</p>
+      <div class="dialog-actions">
+        <button value="cancel" class="ghost">Отмена</button>
+        <button value="confirm" id="confirmDialogOk" class="danger">Удалить</button>
       </div>
     </form>
   </dialog>

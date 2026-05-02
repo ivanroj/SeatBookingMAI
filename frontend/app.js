@@ -25,8 +25,28 @@ const SEAT_TYPES = {
   quiet: "Тихая зона",
 };
 
-const GRID_COLS = 8;
-const GRID_ROWS = 6;
+// Maximum number of columns we allow in the rendered grid. The actual
+// column count is min(MAX_GRID_COLS, capacity); rows are derived from
+// capacity so the rendered shape matches the coworking's "max seats".
+const MAX_GRID_COLS = 8;
+
+// Translate API error responses into a friendly message keyed off the HTTP
+// status code so the toast doesn't expose raw SQL or backend internals.
+const FRIENDLY_ERROR = {
+  400: "Проверьте введённые данные.",
+  401: "Войдите заново — сессия устарела.",
+  403: "Недостаточно прав для этого действия.",
+  404: "Объект не найден.",
+  409: "Действие конфликтует с текущим состоянием.",
+  500: "Сервер временно недоступен. Попробуйте позже.",
+};
+
+function gridShape(capacity) {
+  const cap = Math.max(1, Number(capacity) || 1);
+  const cols = Math.min(MAX_GRID_COLS, cap);
+  const rows = Math.ceil(cap / cols);
+  return { cols, rows, cap };
+}
 
 const state = {
   screen: SCREEN.LANDING,
@@ -63,7 +83,7 @@ function bindElements() {
     "adminLoginPanel", "adminEmail", "adminPassword", "adminLoginBtn",
     "adminPanel",
     "adminNewCoworkingBtn", "adminCoworkingList",
-    "adminGridSection", "adminGridTitle", "adminMap",
+    "adminGridSection", "adminGridTitle", "adminGridHint", "adminMap",
     "adminEditCoworkingBtn", "adminDeleteCoworkingBtn",
     "loadAllBookingsBtn", "allBookingsTable",
     "bookingLimit", "updateLimitBtn",
@@ -76,6 +96,7 @@ function bindElements() {
     "seatDialogZone", "seatDialogType", "seatDialogActive",
     "seatDialogDelete", "seatDialogSave",
     "coworkingDialog", "coworkingDialogTitle", "coworkingDialogName", "coworkingDialogCapacity", "coworkingDialogSave",
+    "confirmDialog", "confirmDialogTitle", "confirmDialogBody", "confirmDialogOk",
     "toastStack",
   ].forEach((k) => { el[k] = $(k); });
 }
@@ -93,8 +114,39 @@ function toast(message, kind = "info") {
 }
 
 function showError(err) {
-  const message = (err && err.message) ? err.message : String(err || "Ошибка");
+  const message = friendlyErrorMessage(err);
   toast(message, "error");
+}
+
+// Hide raw backend errors (PG SQLSTATE strings, internal stack traces, …)
+// behind a curated set of friendly messages. We keep the original message
+// only when it looks user-safe (short, no SQL noise).
+function friendlyErrorMessage(err) {
+  if (!err) return "Ошибка";
+  const status = err.status || 0;
+  if (FRIENDLY_ERROR[status]) return FRIENDLY_ERROR[status];
+  const raw = err.message || String(err);
+  if (!raw) return "Ошибка";
+  if (raw.length > 140 || /SQLSTATE|sql:|pgconn|stack trace|exec failed/i.test(raw)) {
+    return "Не удалось выполнить действие.";
+  }
+  return raw;
+}
+
+// Show a confirmation modal. Returns a Promise<boolean>.
+function confirmAction({ title, body, confirmLabel = "Удалить", danger = true } = {}) {
+  return new Promise((resolve) => {
+    el.confirmDialogTitle.textContent = title || "Подтверждение";
+    el.confirmDialogBody.textContent = body || "";
+    el.confirmDialogOk.textContent = confirmLabel;
+    el.confirmDialogOk.classList.toggle("danger", !!danger);
+    const onClose = () => {
+      el.confirmDialog.removeEventListener("close", onClose);
+      resolve(el.confirmDialog.returnValue === "confirm");
+    };
+    el.confirmDialog.addEventListener("close", onClose);
+    el.confirmDialog.showModal();
+  });
 }
 
 // ----- date helpers ----------------------------------------------------------
@@ -301,7 +353,13 @@ async function reloadStudentMap() {
 function renderStudentMap() {
   const seats = state.studentMapSeats;
   el.studentMap.innerHTML = "";
-  el.studentMap.style.gridTemplateColumns = `repeat(${GRID_COLS}, minmax(56px, 1fr))`;
+  // Pick column count so the schema fits all placed seats but stays compact.
+  // The student schema only renders real seats — no "+", no developer
+  // placeholders.
+  let widest = 0;
+  for (const s of seats) widest = Math.max(widest, (s.grid_x || 0) + 1);
+  const cols = Math.max(1, Math.min(MAX_GRID_COLS, widest || seats.length || 1));
+  el.studentMap.style.gridTemplateColumns = `repeat(${cols}, minmax(56px, 1fr))`;
   el.studentMap.style.gridAutoRows = "56px";
 
   if (!seats.length) {
@@ -549,12 +607,42 @@ function renderAdminMap() {
   const byPos = {};
   for (const s of seats) byPos[`${s.grid_x},${s.grid_y}`] = s;
 
+  // Use the coworking's own capacity (max_seats) to drive the grid shape.
+  // The grid never gets larger than that — admins are guided to the configured
+  // capacity instead of an arbitrary 8×6 sandbox. We still expand if existing
+  // seats happen to live in cells beyond capacity (legacy data).
+  const cw = state.adminCoworkings.find((c) => c.id === state.adminSelectedCoworkingId);
+  const capacity = cw ? cw.capacity : seats.length;
+  const { cols, rows } = gridShape(capacity);
+
+  let totalCells = cols * rows;
+  let effectiveCols = cols;
+  let effectiveRows = rows;
+  for (const s of seats) {
+    const cell = (s.grid_y || 0) * cols + (s.grid_x || 0) + 1;
+    if (cell > totalCells) {
+      effectiveRows = Math.max(effectiveRows, (s.grid_y || 0) + 1);
+      effectiveCols = Math.max(effectiveCols, (s.grid_x || 0) + 1);
+      totalCells = effectiveCols * effectiveRows;
+    }
+  }
+
   el.adminMap.innerHTML = "";
-  el.adminMap.style.gridTemplateColumns = `repeat(${GRID_COLS}, minmax(56px, 1fr))`;
+  el.adminMap.style.gridTemplateColumns = `repeat(${effectiveCols}, minmax(56px, 1fr))`;
   el.adminMap.style.gridAutoRows = "56px";
 
-  for (let y = 0; y < GRID_ROWS; y++) {
-    for (let x = 0; x < GRID_COLS; x++) {
+  // Cap rendered cells at capacity so an admin sees exactly max_seats slots
+  // (plus any out-of-range legacy seats).
+  let cellsToRender = Math.min(totalCells, capacity);
+  cellsToRender = Math.max(cellsToRender, seats.length);
+
+  if (el.adminGridHint) {
+    el.adminGridHint.textContent = `Размещено ${seats.length} из ${capacity} мест. Кликните по пустой клетке, чтобы добавить место.`;
+  }
+
+  let placed = 0;
+  for (let y = 0; y < effectiveRows && placed < cellsToRender; y++) {
+    for (let x = 0; x < effectiveCols && placed < cellsToRender; x++) {
       const seat = byPos[`${x},${y}`];
       const btn = document.createElement("button");
       btn.type = "button";
@@ -568,13 +656,18 @@ function renderAdminMap() {
         label.textContent = seat.label || seat.name;
         btn.appendChild(label);
         btn.addEventListener("click", () => openSeatDialog(seat, x, y));
+      } else if (seats.length >= capacity) {
+        // Capacity reached — don't show more "+" placeholders so admins can't
+        // exceed max_seats by accident.
+        continue;
       } else {
         btn.classList.add("seat-empty");
         btn.textContent = "+";
-        btn.title = `Создать место в (${x},${y})`;
+        btn.title = `Создать место в (${x + 1}, ${y + 1})`;
         btn.addEventListener("click", () => openSeatDialog(null, x, y));
       }
       el.adminMap.appendChild(btn);
+      placed++;
     }
   }
 }
@@ -637,7 +730,15 @@ async function saveSeatFromDialog() {
 async function deleteSeatFromDialog() {
   const seatId = el.seatDialog.dataset.seatId;
   if (!seatId) return;
-  if (!confirm("Удалить это место?")) return;
+  const seat = state.adminMapSeats.find((s) => String(s.id) === String(seatId));
+  const ok = await confirmAction({
+    title: "Удалить место?",
+    body: seat
+      ? `Место «${seat.name}» будет удалено вместе с активными бронированиями. Продолжить?`
+      : "Место будет удалено. Продолжить?",
+    confirmLabel: "Удалить",
+  });
+  if (!ok) return;
   try {
     await api(`/admin/seats/${seatId}`, { method: "DELETE" });
     toast("Место удалено.", "success");
@@ -684,10 +785,40 @@ async function saveCoworkingFromDialog() {
 async function deleteSelectedCoworking() {
   const id = state.adminSelectedCoworkingId;
   if (!id) return;
-  if (!confirm("Удалить этот коворкинг и все его места?")) return;
+  const cw = state.adminCoworkings.find((c) => c.id === id);
+  // Look up active future bookings up front so the modal warns the admin and
+  // we can mention exact numbers (instead of a generic "are you sure?").
+  let activeBookings = 0;
+  try {
+    const all = await api("/admin/bookings");
+    const seatIds = new Set(state.adminMapSeats.map((s) => s.id));
+    const now = Date.now();
+    activeBookings = (all || []).filter((b) =>
+      seatIds.has(b.seat_id) &&
+      b.status === "confirmed" &&
+      new Date(b.end_at).getTime() > now
+    ).length;
+  } catch (_e) { /* non-fatal — fall back to a generic warning */ }
+  const lines = [
+    `Коворкинг «${cw ? cw.name : "?"}» и все его места будут удалены.`,
+  ];
+  if (activeBookings > 0) {
+    lines.push(`Будет автоматически отменено активных броней: ${activeBookings}. Студенты увидят отмену в своих записях.`);
+  }
+  lines.push("Действие нельзя отменить. Продолжить?");
+  const ok = await confirmAction({
+    title: "Удалить коворкинг?",
+    body: lines.join(" "),
+    confirmLabel: "Удалить",
+  });
+  if (!ok) return;
   try {
     await api(`/admin/coworkings/${id}`, { method: "DELETE" });
-    toast("Коворкинг удалён.", "success");
+    if (activeBookings > 0) {
+      toast(`Коворкинг удалён. Отменено активных броней: ${activeBookings}.`, "success");
+    } else {
+      toast("Коворкинг удалён.", "success");
+    }
     state.adminSelectedCoworkingId = null;
     el.adminGridSection.hidden = true;
     await loadAdminCoworkings();

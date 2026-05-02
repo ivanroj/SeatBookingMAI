@@ -565,6 +565,22 @@ func (s *Service) UpdateCoworking(ctx context.Context, actorRole domain.Role, id
 	return c, nil
 }
 
+// DeleteCoworking removes a coworking and everything attached to it.
+//
+// Production behavior:
+//  1. We first look up every seat in the coworking and find every confirmed
+//     booking whose start_at is still in the future. Those bookings get
+//     marked canceled and a per-booking "booking.canceled_by_coworking_delete"
+//     event is appended to the journal so admins can see exactly who was
+//     affected (and who would need to be notified). We don't keep a separate
+//     notifications table — the journal is the surface admins read.
+//  2. We then drop the coworking, which cascades to seats and (with the
+//     bookings_cascade migration) to bookings.
+//
+// The pre-cancellation step is what makes the operation safe in environments
+// where the FK still RESTRICTs (e.g. an older database that hasn't yet had
+// migration 004 applied): once future confirmed bookings are switched to
+// canceled, the cascade chain is unambiguous.
 func (s *Service) DeleteCoworking(ctx context.Context, actorRole domain.Role, id int64) error {
 	if err := ensureAdmin(actorRole); err != nil {
 		return err
@@ -572,10 +588,57 @@ func (s *Service) DeleteCoworking(ctx context.Context, actorRole domain.Role, id
 	if id <= 0 {
 		return domain.ErrInvalidInput
 	}
+	if _, err := s.repo.GetCoworkingByID(ctx, id); err != nil {
+		return err
+	}
+
+	now := s.now().UTC()
+	seats, err := s.repo.ListSeats(ctx, id)
+	if err != nil {
+		return err
+	}
+	canceled := 0
+	if len(seats) > 0 {
+		seatIDs := make(map[int64]struct{}, len(seats))
+		for _, seat := range seats {
+			seatIDs[seat.ID] = struct{}{}
+		}
+		bookings, err := s.repo.ListAllBookings(ctx)
+		if err != nil {
+			return err
+		}
+		for _, b := range bookings {
+			if _, ok := seatIDs[b.SeatID]; !ok {
+				continue
+			}
+			if b.Status != domain.BookingStatusConfirmed {
+				continue
+			}
+			if !b.EndAt.After(now) {
+				continue
+			}
+			if err := s.repo.UpdateBookingStatus(ctx, b.ID, domain.BookingStatusCanceled, now); err != nil {
+				return err
+			}
+			s.logEvent("booking.canceled_by_coworking_delete", map[string]any{
+				"booking_id":   b.ID,
+				"user_id":      b.UserID,
+				"seat_id":      b.SeatID,
+				"display_name": b.DisplayName,
+				"coworking_id": id,
+			})
+			canceled++
+		}
+	}
+
 	if err := s.repo.DeleteCoworking(ctx, id); err != nil {
 		return err
 	}
-	s.logEvent("coworking.deleted", map[string]any{"id": id})
+	s.logEvent("coworking.deleted", map[string]any{
+		"id":                 id,
+		"canceled_bookings":  canceled,
+		"removed_seat_count": len(seats),
+	})
 	return nil
 }
 

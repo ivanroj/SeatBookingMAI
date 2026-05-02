@@ -280,9 +280,18 @@ func (r *FakeRepo) DeleteCoworking(_ context.Context, id int64) error {
 	if !ok {
 		return domain.ErrNotFound
 	}
+	deletedSeats := make(map[int64]struct{})
 	for seatID, seat := range r.seats {
 		if seat.CoworkingID == id {
+			deletedSeats[seatID] = struct{}{}
 			delete(r.seats, seatID)
+		}
+	}
+	// Mirror the bookings_cascade migration: removing a seat removes its
+	// bookings.
+	for bookingID, booking := range r.bookings {
+		if _, ok := deletedSeats[booking.SeatID]; ok {
+			delete(r.bookings, bookingID)
 		}
 	}
 	delete(r.coworkings, id)
