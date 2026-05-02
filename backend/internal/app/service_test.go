@@ -620,6 +620,18 @@ func (r *fakeRepo) DeleteCoworking(_ context.Context, id int64) error {
 	if _, ok := r.coworkings[id]; !ok {
 		return domain.ErrNotFound
 	}
+	deletedSeats := make(map[int64]struct{})
+	for seatID, seat := range r.seats {
+		if seat.CoworkingID == id {
+			deletedSeats[seatID] = struct{}{}
+			delete(r.seats, seatID)
+		}
+	}
+	for bookingID, booking := range r.bookings {
+		if _, ok := deletedSeats[booking.SeatID]; ok {
+			delete(r.bookings, bookingID)
+		}
+	}
 	delete(r.coworkings, id)
 	return nil
 }

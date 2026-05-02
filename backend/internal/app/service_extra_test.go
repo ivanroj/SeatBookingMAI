@@ -211,3 +211,94 @@ func TestListSeatsForMapMarksBusyAndInactive(t *testing.T) {
 		t.Fatalf("unexpected map state: %#v", state)
 	}
 }
+
+func TestDeleteCoworkingCancelsActiveBookings(t *testing.T) {
+	repo := newFakeRepo()
+	now := time.Date(2026, 5, 1, 10, 0, 0, 0, time.UTC)
+	svc := NewService(repo, WithClock(func() time.Time { return now }))
+
+	user := repo.mustCreateUser("u@mai.ru", domain.RoleUser)
+	seat := repo.mustCreateSeat("A1")
+	confirmed := repo.mustCreateBooking(domain.Booking{
+		UserID:      user.ID,
+		SeatID:      seat.ID,
+		StartAt:     now.Add(2 * time.Hour),
+		EndAt:       now.Add(3 * time.Hour),
+		Status:      domain.BookingStatusConfirmed,
+		DisplayName: "Иван",
+	})
+
+	if err := svc.DeleteCoworking(context.Background(), domain.RoleAdmin, 1); err != nil {
+		t.Fatalf("delete coworking: %v", err)
+	}
+
+	// Cascade removed seats + bookings entirely.
+	seats, _ := repo.ListSeats(context.Background(), 1)
+	if len(seats) != 0 {
+		t.Fatalf("expected seats removed, got %d", len(seats))
+	}
+	if _, ok := repo.bookings[confirmed.ID]; ok {
+		t.Fatalf("expected booking %d to be cascade-removed", confirmed.ID)
+	}
+
+	// Per-booking notification + summary entries are visible to admin in the
+	// journal so they can see exactly who was affected.
+	logs, err := svc.Logs(context.Background(), domain.RoleAdmin, 0)
+	if err != nil {
+		t.Fatalf("logs: %v", err)
+	}
+	var sawCancel, sawDelete bool
+	for _, e := range logs {
+		switch e.Event {
+		case "booking.canceled_by_coworking_delete":
+			if e.Fields["display_name"] != "Иван" {
+				t.Fatalf("expected display_name in cancel event: %#v", e.Fields)
+			}
+			if e.Fields["booking_id"] != confirmed.ID {
+				t.Fatalf("expected booking_id=%d, got %v", confirmed.ID, e.Fields["booking_id"])
+			}
+			sawCancel = true
+		case "coworking.deleted":
+			if e.Fields["canceled_bookings"] != 1 {
+				t.Fatalf("expected canceled_bookings=1, got %v", e.Fields["canceled_bookings"])
+			}
+			sawDelete = true
+		}
+	}
+	if !sawCancel || !sawDelete {
+		t.Fatalf("missing journal entries: cancel=%v delete=%v", sawCancel, sawDelete)
+	}
+}
+
+func TestDeleteCoworkingIgnoresPastAndCanceledBookings(t *testing.T) {
+	repo := newFakeRepo()
+	now := time.Date(2026, 5, 1, 10, 0, 0, 0, time.UTC)
+	svc := NewService(repo, WithClock(func() time.Time { return now }))
+
+	user := repo.mustCreateUser("u@mai.ru", domain.RoleUser)
+	seat := repo.mustCreateSeat("A1")
+	repo.mustCreateBooking(domain.Booking{
+		UserID:  user.ID,
+		SeatID:  seat.ID,
+		StartAt: now.Add(-3 * time.Hour),
+		EndAt:   now.Add(-2 * time.Hour),
+		Status:  domain.BookingStatusCompleted,
+	})
+	repo.mustCreateBooking(domain.Booking{
+		UserID:  user.ID,
+		SeatID:  seat.ID,
+		StartAt: now.Add(2 * time.Hour),
+		EndAt:   now.Add(3 * time.Hour),
+		Status:  domain.BookingStatusCanceled,
+	})
+
+	if err := svc.DeleteCoworking(context.Background(), domain.RoleAdmin, 1); err != nil {
+		t.Fatalf("delete coworking: %v", err)
+	}
+	logs, _ := svc.Logs(context.Background(), domain.RoleAdmin, 0)
+	for _, e := range logs {
+		if e.Event == "booking.canceled_by_coworking_delete" {
+			t.Fatalf("did not expect cancel event for past/canceled bookings: %#v", e)
+		}
+	}
+}
